@@ -1,0 +1,36 @@
+{
+  "type": "mod",
+  "id": "nox.ffmpeg",
+  "provides": [
+    "ffmpeg"
+  ],
+  "name": "FFmpeg Video Player",
+  "version": "1.0.0",
+  "description": "Provides FFmpeg video playback functionality.",
+  "license": "GPL-3.0",
+  "icon": null,
+  "contact": {
+    "email": "hactazia@gmail.com",
+    "source": "https://github.com/AtelierVR/nox.ffmpeg",
+    "website": "https://nox.hactazia.fr/",
+    "issues": "https://github.com/AtelierVR/nox.ffmpeg/issues"
+  },
+  "authors": [
+    {
+      "name": "Hactazia",
+      "email": "hactazia@gmail.com",
+      "website": "https://hactazia.fr/"
+    }
+  ],
+  "contributors": [],
+  "relations": [
+  ],
+  "constraints": [],
+  "entrypoints": {
+    "main": [
+      "Nox.FFmpeg.Runtime.Main"
+    ]
+  },
+  "references": [],
+  "permissions": []
+}
