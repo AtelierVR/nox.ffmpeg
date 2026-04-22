@@ -26,11 +26,8 @@
   "relations": [
   ],
   "constraints": [],
-  "entrypoints": {
-    "main": [
-      "Nox.FFmpeg.Runtime.Main"
-    ]
-  },
+  "entrypoints": {},
+
   "references": [],
   "permissions": []
 }
