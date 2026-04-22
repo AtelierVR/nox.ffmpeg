@@ -224,7 +224,7 @@ namespace Nox.FFmpeg.Editor {
 				return;
 			}
 
-			string key = $"{worker.GetInstanceID()}";
+			string key = $"{worker.GetEntityId().GetHashCode()}";
 			if (!_workerFolds.ContainsKey(key))
 				_workerFolds[key] = true;
 
@@ -320,10 +320,10 @@ namespace Nox.FFmpeg.Editor {
 			var seenAudio   = new HashSet<int>();
 			var seenMesh    = new HashSet<int>();
 			var seenBase    = new HashSet<int>();
-			var uniqueAudio = audioConnectors.FindAll(c => c != null && seenAudio.Add(c.GetInstanceID()) && IsLinkedTo(c, player));
-			var uniqueMesh  = meshConnectors.FindAll(c  => c != null && seenMesh.Add(c.GetInstanceID())  && IsLinkedTo(c, player));
+			var uniqueAudio = audioConnectors.FindAll(c => c != null && seenAudio.Add(c.GetEntityId().GetHashCode()) && IsLinkedTo(c, player));
+			var uniqueMesh  = meshConnectors.FindAll(c  => c != null && seenMesh.Add(c.GetEntityId().GetHashCode())  && IsLinkedTo(c, player));
 			// BaseConnector exclut AudioSourceConnector (déjà compté) et filtre par Player
-			var uniqueBase  = baseConnectors.FindAll(c  => c != null && seenBase.Add(c.GetInstanceID())
+			var uniqueBase  = baseConnectors.FindAll(c  => c != null && seenBase.Add(c.GetEntityId().GetHashCode())
 			                                               && !(c is AudioSourceConnector)
 			                                               && IsLinkedTo(c, player));
 
