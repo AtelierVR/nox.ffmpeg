@@ -21,13 +21,5 @@
       "email": "hactazia@gmail.com",
       "website": "https://hactazia.fr/"
     }
-  ],
-  "contributors": [],
-  "relations": [
-  ],
-  "constraints": [],
-  "entrypoints": {},
-
-  "references": [],
-  "permissions": []
+  ]
 }
