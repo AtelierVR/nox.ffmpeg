@@ -1,5 +1,6 @@
 {
   "name": "nox.ffmpeg",
   "displayName": "Nox - FFmpeg Video Player",
-  "version": "1.0.0"
+  "version": "1.0.0",
+  "description": "FFmpeg-based video decoding and playback backend for Nox."
 }
