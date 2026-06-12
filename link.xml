@@ -1,4 +1,12 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <linker>
+	<assembly fullname="avcodec-61" preserve="all" />
+	<assembly fullname="avdevice-61" preserve="all" />
+	<assembly fullname="avfilter-10" preserve="all" />
+	<assembly fullname="avformat-61" preserve="all" />
+	<assembly fullname="avutil-59" preserve="all" />
 	<assembly fullname="Nox.FFmpeg" preserve="all" />
+	<assembly fullname="postproc-58" preserve="all" />
+	<assembly fullname="swresample-5" preserve="all" />
+	<assembly fullname="swscale-8" preserve="all" />
 </linker>
