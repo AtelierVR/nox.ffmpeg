@@ -92,6 +92,17 @@ crashlytics-build.properties
 /[Aa]ssets/[Pp]olygonmaker/
 /[Tt]hry/*
 
+# .NET build artifacts
+**/[Bb]in/
+**/[Oo]bj/
+**/[Bb]in.meta
+**/[Oo]bj.meta
+
+# Un-ignore .csproj files for FFmpeg sub-projects (overrides root *.csproj)
+!FFmpeg.AutoGen/*.csproj
+!FFmpeg.AutoGen.ClangMacroParser/*.csproj
+!FFmpeg.AutoGen.Abstractions/*.csproj
+
 _*
 
 mono_crash.*
