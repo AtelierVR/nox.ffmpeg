@@ -6,6 +6,7 @@
       FFmpeg auto generated unsafe bindings for C#/.NET and Mono. An abstraction API has been created specifically for use in .NET MAUI scenarios.
       This API can be utilized in conjunction with either the FFmpeg.AutoGen.Bindings.DynamicallyLinked, FFmpeg.AutoGen.Bindings.DynamicallyLoaded or FFmpeg.AutoGen.Bindings.StaticallyLinked package.
     </Description>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
     <GeneratePackageOnBuild Condition=" $(Configuration) == 'Release' ">true</GeneratePackageOnBuild>
   </PropertyGroup>
 
