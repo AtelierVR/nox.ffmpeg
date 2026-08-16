@@ -4,7 +4,7 @@
   "provides": [
     "ffmpeg"
   ],
-  "name": "FFmpeg Video Player",
+  "name": "Nox - FFmpeg for Video Player",
   "version": "1.0.0",
   "description": "FFmpeg-based video decoding and playback backend for Nox.",
   "license": "GPL-3.0",
@@ -21,5 +21,14 @@
       "email": "hactazia@gmail.com",
       "website": "https://hactazia.fr/"
     }
-  ]
+  ],
+  "entrypoints": {
+    "main": [
+      {
+        "namespace": "Nox.FFmpeg.Executor",
+        "class": "Main",
+        "assembly": "Nox.FFmpeg"
+      }
+    ]
+  }
 }
