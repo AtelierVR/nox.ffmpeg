@@ -153,6 +153,7 @@ namespace Nox.FFmpeg.Utils {
 		}
 
 		private void Start() {
+			VideoPlayerRegister.Register(this);
 			if (AutoPlay && !string.IsNullOrWhiteSpace(Url))
 				Play(Url);
 		}
@@ -285,8 +286,10 @@ namespace Nox.FFmpeg.Utils {
 			_vs.StreamSeek((long)(pos * ffmpeg.AV_TIME_BASE), (long)(delta * ffmpeg.AV_TIME_BASE), false);
 		}
 
-		private void OnDestroy()
-			=> Close();
+		private void OnDestroy() {
+			VideoPlayerRegister.UnRegister(this);
+			Close();
+		}
 		
 		private void OnDisable()
 			=> _vs?.TogglePause();
