@@ -377,10 +377,15 @@ namespace Nox.FFmpeg {
 
 			int wantedNbSamples = SynchronizeAudio(frame->nb_samples);
 
-			// Resampling / format conversion via SwrContext (identical to ffplay.c)
-			bool needResample = (AVSampleFormat)frame->format != AudioTgtFmt
-				|| frame->sample_rate != AudioTgtFreq
-				|| frame->ch_layout.nb_channels != AudioTgtChannels
+			// Resampling / format conversion via SwrContext (identical to ffplay.c).
+			// Recreate when the context is missing or the SOURCE format/rate/channels
+			// change. Comparing against the target (S16) would recreate on every frame
+			// (decoder format always differs from the target), which drops the resampler
+			// tail each frame and causes periodic phase jumps for rate conversions.
+			bool needResample = SwrCtx == null
+				|| (AVSampleFormat)frame->format != AudioSrcFmt
+				|| frame->sample_rate != AudioSrcFreq
+				|| frame->ch_layout.nb_channels != AudioSrcChannels
 				|| (wantedNbSamples != frame->nb_samples && SwrCtx == null);
 
 			if (needResample) {
@@ -541,9 +546,10 @@ namespace Nox.FFmpeg {
 					AudioSrcChannels = avctx->ch_layout.nb_channels;
 					AudioSrcFmt      = avctx->sample_fmt;
 
-					// Target: stereo s16 at source rate (Unity AudioSource will handle playback rate)
+					// Target: stereo s16 at Unity's output rate. Always stereo so the
+					// interleaved PCM layout matches the AudioClip (created with 2 channels).
 					AudioTgtFreq       = TargetAudioFreq > 0 ? TargetAudioFreq : avctx->sample_rate;
-					AudioTgtChannels   = Math.Min(2, avctx->ch_layout.nb_channels);
+					AudioTgtChannels   = 2;
 					AudioTgtFmt        = AVSampleFormat.AV_SAMPLE_FMT_S16;
 					AudioDiffThreshold = AudioHwBufSize; // set by controller after opening
 

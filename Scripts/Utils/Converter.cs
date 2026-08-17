@@ -1,17 +1,16 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
-using System.Runtime.InteropServices;
 using FFmpeg.AutoGen;
-using UnityEngine;
 
 namespace Nox.FFmpeg.Helpers {
 	public sealed unsafe class Converter : IDisposable {
 		private readonly Size _destinationSize;
 		private readonly AVPixelFormat _destinationPixelFormat;
 		private readonly SwsContext* _pConvertContext;
-		private readonly List<byte_ptrArray4> ptrs = new List<byte_ptrArray4>();
-		private readonly List<IntPtr> ptrs2 = new List<IntPtr>();
+
+		private byte_ptrArray4 _dstData;
+		private int_array4     _dstLinesize;
+		private bool           _dstAllocated;
 
 		public Converter(
 			Size sourceSize,      AVPixelFormat sourcePixelFormat,
@@ -36,36 +35,36 @@ namespace Nox.FFmpeg.Helpers {
 		}
 
 		public void Dispose() {
-			foreach (var _dstData in ptrs)
-				fixed (void* p = &_dstData.ToArray()[0])
-					ffmpeg.av_freep(p);
-			foreach (var _dstData in ptrs2)
-				Marshal.FreeHGlobal(_dstData);
+			FreeBuffer();
 			ffmpeg.sws_freeContext(_pConvertContext);
 		}
 
-		public AVFrame Convert(AVFrame sourceFrame, int align = -1) {
-			int j = 1;
-			if (align < 0) {
-				for (uint i = 1; i <= 64; i *= 2) {
-					if (Mathf.Abs(sourceFrame.linesize[0 * i]) % i == 0 &&
-						Mathf.Abs(sourceFrame.linesize[1 * i]) % i == 0 &&
-						Mathf.Abs(sourceFrame.linesize[2 * i]) % i == 0) {
-					} else {
-						j = (int)i;
-						break;
-					}
-				}
-			} else {
-				j = align;
+		private void FreeBuffer() {
+			if (!_dstAllocated)
+				return;
+			fixed (void* p = &_dstData.ToArray()[0])
+				ffmpeg.av_freep(p);
+			_dstAllocated = false;
+		}
+
+		/// Converts the source frame into a reusable RGB24 destination buffer.
+		/// The buffer is allocated once and reused, avoiding per-frame allocation.
+		public AVFrame Convert(AVFrame sourceFrame) {
+			if (!_dstAllocated) {
+				_dstData     = new byte_ptrArray4();
+				_dstLinesize = new int_array4();
+				ffmpeg.av_image_alloc(ref _dstData, ref _dstLinesize,
+					_destinationSize.Width, _destinationSize.Height,
+					_destinationPixelFormat, 32).ThrowExceptionIfError();
+				// Force a tightly packed stride so consumers can copy
+				// width*height*3 contiguous bytes.
+				_dstLinesize[0] = _destinationSize.Width * 3;
+				_dstLinesize[1] = 0;
+				_dstLinesize[2] = 0;
+				_dstLinesize[3] = 0;
+				_dstAllocated = true;
 			}
-			byte_ptrArray4 _dstData     = new byte_ptrArray4();
-			int_array4     _dstLinesize = new int_array4();
-			ffmpeg.av_image_alloc(ref _dstData, ref _dstLinesize, _destinationSize.Width, _destinationSize.Height, _destinationPixelFormat, j).ThrowExceptionIfError();
-			_dstLinesize[0] = _destinationSize.Width * 3;
-			_dstLinesize[1] = 0;
-			_dstLinesize[2] = 0;
-			_dstLinesize[3] = 0;
+
 			int ret = ffmpeg.sws_scale(_pConvertContext,
 				sourceFrame.data,
 				sourceFrame.linesize,
@@ -74,9 +73,6 @@ namespace Nox.FFmpeg.Helpers {
 				_dstData,
 				_dstLinesize);
 			if (ret < 0) {
-				fixed (void* p = &_dstData.ToArray()[0]) {
-					ffmpeg.av_freep(p);
-				}
 				ret.ThrowExceptionIfError();
 				throw new ApplicationException();
 			}
@@ -85,13 +81,6 @@ namespace Nox.FFmpeg.Helpers {
 			data.UpdateFrom(_dstData);
 			var linesize = new int_array8();
 			linesize.UpdateFrom(_dstLinesize);
-
-			ptrs.Add(_dstData);
-
-			// fixed (void* p = &_dstData.ToArray()[0])
-			{
-				// ffmpeg.av_freep(p);
-			}
 
 			return new AVFrame {
 				data     = data,

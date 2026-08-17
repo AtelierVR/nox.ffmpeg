@@ -1,5 +1,6 @@
 using System;
-using System.Runtime.InteropServices;
+using System.Collections.Generic;
+using System.IO;
 using System.Threading.Tasks;
 using Cysharp.Threading.Tasks;
 using FFmpeg.AutoGen;
@@ -17,13 +18,19 @@ namespace Nox.FFmpeg.Utils {
 		public bool AutoPlay = true;
 		public int AvSyncType = Constants.AV_SYNC_AUDIO_MASTER;
 
+		[Header("Debug")]
+		[Tooltip("Dump decoded PCM to a raw f32le file (before Unity audio) for debugging.")]
+		public bool DumpAudioPcm = false;
+		[Tooltip("Raw f32le interleaved dump. Convert: ffmpeg -f f32le -ar <rate> -ac <channels> -i dump.f32 dump.wav")]
+		public string DumpAudioPath = "audio_dump.f32";
+
 		// ── Output subscriptions ──────────────────────────────────────────
 		public UnityEvent<Texture2D> OnFrame = new();
 		/// Subscribe to receive raw float PCM for custom audio processing.
 		public event Action<float[], int, int> OnAudioSamples;
 
 		// ── Current frame ─────────────────────────────────────────────
-		public Texture2D Frame { get; private set; }
+		public Texture2D Frame => _videoHandler?.Frame;
 		// ── Audio output ─────────────────────────────────────────────────
 		/// Fires on the main thread when a new AudioClip is created (stream opened).
 		public UnityEvent<AudioClip> OnClip = new();
@@ -32,9 +39,72 @@ namespace Nox.FFmpeg.Utils {
 		/// Sample rate used for the streaming AudioClip.
 		public int AudioSampleRate => _sampleRate;
 		/// Current PCM write cursor in the ring buffer (sample-frames mod clip.samples).
-		public int PcmWritePos => _pcmWritePos;
+		public int PcmWritePos => _audioHandler?.PcmWritePos ?? 0;
 		/// Update the audio hardware buffer latency fed to the video clock (call from main thread).
 		public void SetAudioLatency(double seconds) { if (_vs != null) _vs.AudioHwBufSize = seconds; }
+		/// Pull decoded PCM sample-frames from the audio handler (main thread).
+		/// Returns the number of frames copied into <paramref name="dst"/>.
+		public int ReadAudio(float[] dst, int frames)
+			=> _audioHandler?.Read(dst, frames) ?? 0;
+
+		// ── PCM debug dump (bypasses the AudioClip / AudioSource) ────────
+		private long _pcmDataBytes;
+		private int _pcmRate, _pcmChannels;
+
+		private void HandleAudioSamples(float[] data, int channels, int freq) {
+			if (_pcmDump != null) {
+				var bytes = new byte[data.Length * 4];
+				Buffer.BlockCopy(data, 0, bytes, 0, bytes.Length);
+				_pcmDump.Write(bytes, 0, bytes.Length);
+				_pcmDataBytes += bytes.Length;
+			}
+			OnAudioSamples?.Invoke(data, channels, freq);
+		}
+
+		private void StartPcmDump() {
+			StopPcmDump();
+			if (string.IsNullOrWhiteSpace(DumpAudioPath)) return;
+			try {
+				_pcmDump = new FileStream(DumpAudioPath, FileMode.Create, FileAccess.Write, FileShare.Read);
+				_pcmRate = _sampleRate;
+				_pcmChannels = _audioChannels;
+				_pcmDataBytes = 0;
+
+				// Minimal float32 WAV header (sizes patched on Stop).
+				var header = new byte[44];
+				System.Text.Encoding.ASCII.GetBytes("RIFF").CopyTo(header, 0);
+				System.Text.Encoding.ASCII.GetBytes("WAVE").CopyTo(header, 8);
+				System.Text.Encoding.ASCII.GetBytes("fmt ").CopyTo(header, 12);
+				BitConverter.GetBytes(16).CopyTo(header, 16);                    // fmt chunk size
+				BitConverter.GetBytes((ushort)3).CopyTo(header, 20);             // IEEE float
+				BitConverter.GetBytes((ushort)_pcmChannels).CopyTo(header, 22);  // channels
+				BitConverter.GetBytes(_pcmRate).CopyTo(header, 24);              // sample rate
+				BitConverter.GetBytes(_pcmRate * _pcmChannels * 4).CopyTo(header, 28); // byte rate
+				BitConverter.GetBytes((ushort)(_pcmChannels * 4)).CopyTo(header, 32);  // block align
+				BitConverter.GetBytes((ushort)32).CopyTo(header, 34);            // bits per sample
+				System.Text.Encoding.ASCII.GetBytes("data").CopyTo(header, 36);
+				_pcmDump.Write(header, 0, header.Length);
+				_pcmDump.Flush();
+			} catch (Exception e) {
+				Debug.LogError($"[FFplay] PCM dump failed: {e.Message}");
+				_pcmDump = null;
+			}
+		}
+
+		private void StopPcmDump() {
+			if (_pcmDump == null) return;
+			try {
+				var riff = BitConverter.GetBytes((int)(36 + _pcmDataBytes));
+				var dataSize = BitConverter.GetBytes((int)_pcmDataBytes);
+				_pcmDump.Seek(4, SeekOrigin.Begin);
+				_pcmDump.Write(riff, 0, 4);
+				_pcmDump.Seek(40, SeekOrigin.Begin);
+				_pcmDump.Write(dataSize, 0, 4);
+			} finally {
+				_pcmDump.Dispose();
+				_pcmDump = null;
+			}
+		}
 		/// Master clock in seconds (NaN when not playing).
 		public double MasterClock => _vs?.GetMasterClock() ?? double.NaN;
 		// ── Public state ──────────────────────────────────────────────────
@@ -128,28 +198,29 @@ namespace Nox.FFmpeg.Utils {
 			OnError.Invoke(this, new Exception(message));
 		}
 
+		// ── Streams & handlers ────────────────────────────────────────────
+		public IStream[]  Streams  { get; private set; } = Array.Empty<IStream>();
+		public IHandler[] Handlers { get; private set; } = Array.Empty<IHandler>();
+
+		private VideoHandler _videoHandler;
+		private AudioHandler _audioHandler;
+
 		// ── Private ───────────────────────────────────────────────────────
 		private VideoState _vs;
+		private FileStream _pcmDump;
 
 		private int _sampleRate;
 		private int _audioChannels;
-		private volatile int _pcmWritePos; // write cursor in the ring, sample-frames mod clip length
 		private double _refreshTime;
 
 		// ── Unity lifecycle ───────────────────────────────────────────────
 		private void Awake() {
 			Initializer.Initialize();
 			_sampleRate = AudioSettings.outputSampleRate;
-			_audioChannels = AudioSettings.speakerMode switch {
-				AudioSpeakerMode.Mono        => 1,
-				AudioSpeakerMode.Stereo      => 2,
-				AudioSpeakerMode.Prologic    => 2,
-				AudioSpeakerMode.Quad        => 4,
-				AudioSpeakerMode.Surround    => 5,
-				AudioSpeakerMode.Mode5point1 => 6,
-				AudioSpeakerMode.Mode7point1 => 8,
-				_                            => 2
-			};
+			// FFmpeg resamples to stereo s16 and Unity AudioSource reliably plays
+			// only 1–2 channel clips. Force stereo so the AudioClip layout always
+			// matches the resampled PCM layout (no channel interleave mismatch).
+			_audioChannels = 2;
 		}
 
 		private void Start() {
@@ -164,49 +235,6 @@ namespace Nox.FFmpeg.Utils {
 
 			// Drive video_refresh every frame; let it decide internally when to display
 			_vs.VideoRefresh(Constants.REFRESH_RATE);
-		}
-
-		// Called by VideoState when a decoded frame is ready.
-		// OnVideoFrameReady is only ever invoked from VideoRefresh → Update (main thread).
-		// No UniTask.Post needed — UploadFrame runs inline, same frame, no extra latency.
-		private void HandleVideoFrame(IntPtr framePtr) {
-			AVFrame* frame = (AVFrame*)framePtr;
-			if (frame == null || frame->data[0] == null || frame->format == -1)
-				return;
-
-			int w = frame->width,
-				h = frame->height;
-			int    len = w * h * 3;
-			byte[] buf = new byte[ len ];
-
-			// Convert to RGB24 via swscale (main thread — frame is valid for the duration of this call)
-			using var sws = new Converter(
-				new System.Drawing.Size(w, h), (AVPixelFormat)frame->format,
-				new System.Drawing.Size(w, h), AVPixelFormat.AV_PIX_FMT_RGB24);
-			var converted = sws.Convert(*frame);
-			Marshal.Copy((IntPtr)converted.data[0], buf, 0, len);
-
-			UploadFrame(w, h, buf);
-		}
-
-		private void UploadFrame(int w, int h, byte[] buf) {
-			if (!Frame || Frame.width != w || Frame.height != h) {
-				if (Frame)
-					Destroy(Frame);
-				Frame = new Texture2D(w, h, TextureFormat.RGB24, false) { name = "FFplay" };
-			}
-			Frame.LoadRawTextureData(buf);
-			Frame.Apply(false);
-			OnFrame.Invoke(Frame);
-		}
-
-		// ── Audio (PCMReaderCallback — runs on audio thread) ─────────────
-		private void OnPCMRead(float[] data) {
-			if (_vs == null) { Array.Clear(data, 0, data.Length); return; }
-			_vs.AudioCallback(data, _audioChannels, _sampleRate);
-			OnAudioSamples?.Invoke(data, _audioChannels, _sampleRate);
-			// Advance write cursor so AudioSourceComponent can measure real buffer depth
-			_pcmWritePos = (_pcmWritePos + data.Length / _audioChannels) % _sampleRate;
 		}
 
 		// ── Public API ────────────────────────────────────────────────────
@@ -226,16 +254,39 @@ namespace Nox.FFmpeg.Utils {
 			// Estimate audio hw buffer latency (≈ Unity's AudioSource buffer)
 			_vs.AudioHwBufSize = 1.0 / Constants.AUDIO_MAX_CALLBACKS_PER_SEC * 2;
 
-			_vs.OnVideoFrameReady = HandleVideoFrame;
+			// Build the streams (flux) and their typed handlers.
+			var streams  = new List<IStream> { new MediaStream(StreamType.Video, url) };
+			var handlers = new List<IHandler>();
+
+			_videoHandler = new VideoHandler(_vs);
+			_videoHandler.OnFrame.AddListener(frame => OnFrame.Invoke(frame));
+			_videoHandler.Start();
+			handlers.Add(_videoHandler);
+
+			if (!string.IsNullOrEmpty(audioUrl))
+				streams.Add(new MediaStream(StreamType.Audio, audioUrl));
+
+			_audioHandler = new AudioHandler(_vs, _audioChannels, _sampleRate);
+			if (DumpAudioPcm) StartPcmDump();
+			_audioHandler.OnSamples += HandleAudioSamples;
+			_audioHandler.Start();
+			handlers.Add(_audioHandler);
+
+			Streams  = streams.ToArray();
+			Handlers = handlers.ToArray();
+
 			_vs.StartReadThread();
 
 			// Bootstrap AudioHwBufSize from DSP config; refined dynamically by AudioSourceComponent
 			AudioSettings.GetDSPBufferSize(out int dspLen, out int dspCount);
 			_vs.AudioHwBufSize = (double)(dspLen * dspCount) / _sampleRate;
 
-			_pcmWritePos = 0;
 			if (Clip) Destroy(Clip);
-			Clip = AudioClip.Create("FFplay", _sampleRate, _audioChannels, _sampleRate, true, OnPCMRead);
+			// Non-stream circular clip (1 s). AudioSourceComponent fills it from the
+			// main thread via SetData, mirroring the voice-output ring buffer.
+			// Decoding happens on a dedicated thread in AudioHandler — never on
+			// Unity's audio thread — so the stream can't glitch on decode hiccups.
+			Clip = AudioClip.Create("FFplay", _sampleRate, _audioChannels, _sampleRate, false);
 			OnClip.Invoke(Clip);
 			OnPlay.Invoke(this);
 		}
@@ -246,9 +297,17 @@ namespace Nox.FFmpeg.Utils {
 
 		[ContextMenu("Stop")]
 		public void Close() {
+			StopPcmDump();
 			if (Clip) { Destroy(Clip); Clip = null; }
+
+			_videoHandler?.Stop();
+			_audioHandler?.Stop();
+			_videoHandler = null;
+			_audioHandler = null;
+			Streams  = Array.Empty<IStream>();
+			Handlers = Array.Empty<IHandler>();
+
 			if (_vs == null) return;
-			_vs.OnVideoFrameReady = null;
 			var vs = _vs;
 			_vs = null;
 			// Dispose on a background thread — ReadTid.Join() can block seconds on network streams
