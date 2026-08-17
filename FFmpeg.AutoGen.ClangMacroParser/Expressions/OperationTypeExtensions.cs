@@ -32,61 +32,54 @@ namespace FFmpeg.AutoGen.ClangMacroParser.Expressions
         public static int GetPrecedence(this OperationType operationType) => OperationPrecedence[operationType];
 
         public static OperationType ToOperationType(this string value)
-        {
-            switch (value)
+            => value switch
             {
-                case "+": return OperationType.Add;
-                case "/": return OperationType.Divide;
-                case "%": return OperationType.Modulo;
-                case "*": return OperationType.Multiply;
-                case "^": return OperationType.Power;
-                case "-": return OperationType.Subtract;
-                case "&": return OperationType.And;
-                case "|": return OperationType.Or;
-                case "~": return OperationType.ExclusiveOr;
-                case "<<": return OperationType.LeftShift;
-                case ">>": return OperationType.RightShift;
-                case "&&": return OperationType.AndAlso;
-                case "||": return OperationType.OrElse;
-                case "==": return OperationType.Equal;
-                case "!=": return OperationType.NotEqual;
-                case ">=": return OperationType.GreaterThanOrEqual;
-                case ">": return OperationType.GreaterThan;
-                case "<": return OperationType.LessThan;
-                case "<=": return OperationType.LessThanOrEqual;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(value));
-            }
-        }
+                "+" => OperationType.Add,
+                "/" => OperationType.Divide,
+                "%" => OperationType.Modulo,
+                "*" => OperationType.Multiply,
+                "^" => OperationType.Power,
+                "-" => OperationType.Subtract,
+                "&" => OperationType.And,
+                "|" => OperationType.Or,
+                "~" => OperationType.ExclusiveOr,
+                "<<" => OperationType.LeftShift,
+                ">>" => OperationType.RightShift,
+                "&&" => OperationType.AndAlso,
+                "||" => OperationType.OrElse,
+                "==" => OperationType.Equal,
+                "!=" => OperationType.NotEqual,
+                ">=" => OperationType.GreaterThanOrEqual,
+                ">" => OperationType.GreaterThan,
+                "<" => OperationType.LessThan,
+                "<=" => OperationType.LessThanOrEqual,
+                _ => throw new ArgumentOutOfRangeException(nameof(value)),
+            };
 
         public static string ToOperationTypeString(this OperationType operationType)
-        {
-            switch (operationType)
+            => operationType switch
             {
-                case OperationType.Add: return "+";
-                case OperationType.Divide: return "/";
-                case OperationType.Modulo: return "%";
-                case OperationType.Multiply: return "*";
-                case OperationType.Power: return "^";
-                case OperationType.Subtract: return "-";
-                case OperationType.And: return "&";
-                case OperationType.Or: return "|";
-                case OperationType.ExclusiveOr: return "~";
-                case OperationType.LeftShift: return "<<";
-                case OperationType.RightShift: return ">>";
-                case OperationType.AndAlso: return "&&";
-                case OperationType.OrElse: return "||";
-                case OperationType.Equal: return "==";
-                case OperationType.NotEqual: return "!=";
-                case OperationType.GreaterThanOrEqual: return ">=";
-                case OperationType.GreaterThan: return ">";
-                case OperationType.LessThan: return "<";
-                case OperationType.LessThanOrEqual: return "<=";
-
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(operationType));
-            }
-        }
+                OperationType.Add => "+",
+                OperationType.Divide => "/",
+                OperationType.Modulo => "%",
+                OperationType.Multiply => "*",
+                OperationType.Power => "^",
+                OperationType.Subtract => "-",
+                OperationType.And => "&",
+                OperationType.Or => "|",
+                OperationType.ExclusiveOr => "~",
+                OperationType.LeftShift => "<<",
+                OperationType.RightShift => ">>",
+                OperationType.AndAlso => "&&",
+                OperationType.OrElse => "||",
+                OperationType.Equal => "==",
+                OperationType.NotEqual => "!=",
+                OperationType.GreaterThanOrEqual => ">=",
+                OperationType.GreaterThan => ">",
+                OperationType.LessThan => "<",
+                OperationType.LessThanOrEqual => "<=",
+                _ => throw new ArgumentOutOfRangeException(nameof(operationType)),
+            };
 
         public static bool IsArithmetic(this OperationType operationType)
             => operationType == OperationType.Add ||

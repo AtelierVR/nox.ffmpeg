@@ -1,7 +1,7 @@
 using System;
 using UnityEngine;
 
-namespace Nox.FFmpeg.Utils {
+namespace Nox.FFmpeg.Components {
 
 	/// How the video texture is mapped onto the mesh.
 	public enum VideoMeshFit {

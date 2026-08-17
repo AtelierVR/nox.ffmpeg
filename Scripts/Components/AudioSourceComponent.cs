@@ -1,7 +1,8 @@
 using System;
 using UnityEngine;
+using Nox.FFmpeg.Handlers;
 
-namespace Nox.FFmpeg.Utils {
+namespace Nox.FFmpeg.Components {
 
 	/// Subscribes to a Player's OnClip event and drives one or more AudioSources
 	/// with the resulting PCM stream. Mirrors VoiceAudioSourceOutput: the non-stream
@@ -29,6 +30,13 @@ namespace Nox.FFmpeg.Utils {
 		private float[] _scratch;
 
 		private const int FillChunkFrames = 4096;
+
+		// ── Utils ───────────────────────────────────────────────────────── 
+
+		/// Current PCM write cursor in the ring buffer (sample-frames mod clip.samples).
+		public AudioHandler Audio 
+			=> Source.state.GetHandler<AudioHandler>();
+
 
 		// ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -130,7 +138,7 @@ namespace Nox.FFmpeg.Utils {
 			}
 
 			// Feed the total decode→speaker buffering back to the A/V clock.
-			int decodedAhead = Source.PcmWritePos - _writePos;   // frames still in the handler ring
+			int decodedAhead = Audio.PcmWritePos - _writePos;   // frames still in the handler ring
 			float totalLatency = (float)(decodedAhead + ahead) / sampleRate;
 			Source.SetAudioLatency(Mathf.Clamp(totalLatency, 0.01f, 1.5f));
 		}
@@ -143,7 +151,7 @@ namespace Nox.FFmpeg.Utils {
 			if (_scratch == null || _scratch.Length < need)
 				_scratch = new float[need];
 
-			int got = Source.ReadAudio(_scratch, chunk);
+			int got = Audio.Read(_scratch, chunk);
 			if (got <= 0) return;
 
 			int frameIndex = _writePos % clipLen;
