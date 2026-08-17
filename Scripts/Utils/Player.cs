@@ -1,13 +1,16 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using Cysharp.Threading.Tasks;
 using FFmpeg.AutoGen;
+using Nox.CCK.VideoPlayer;
 using Nox.FFmpeg.Helpers;
+using Nox.VideoPlayer;
 using UnityEngine;
 using UnityEngine.Events;
 
 namespace Nox.FFmpeg.Utils {
-	public unsafe class Player : MonoBehaviour {
+	public unsafe class Player : MonoBehaviour, IVideoPlayer {
 
 		[Header("Playback")]
 		public string Url;
@@ -46,6 +49,86 @@ namespace Nox.FFmpeg.Utils {
 				&& ((_vs.VideoStream >= 0 && _vs.VideoQ.NbPackets < Constants.MIN_FRAMES / 4)
 					|| (_vs.AudioStream >= 0 && _vs.AudioQ.NbPackets < Constants.MIN_FRAMES / 4));
 
+		// ── IVideoPlayer ──────────────────────────────────────────────────
+		public UnityEvent<IVideoPlayer, Exception> OnError { get; } = new();
+		public UnityEvent<IVideoPlayer, string>    OnMessage { get; } = new();
+		public UnityEvent<IVideoPlayer, float>     OnVolume { get; } = new();
+		public UnityEvent<IVideoPlayer, double>    OnSeek { get; } = new();
+		public UnityEvent<IVideoPlayer, bool>      OnLoop { get; } = new();
+		public UnityEvent<IVideoPlayer>            OnPlay { get; } = new();
+		public UnityEvent<IVideoPlayer>            OnPause { get; } = new();
+		public UnityEvent<IVideoPlayer>            OnResume { get; } = new();
+		public UnityEvent<IVideoPlayer>            OnStop { get; } = new();
+
+		private float _volume = 1f;
+		private bool  _loop;
+
+		public float Volume {
+			get => _vs == null ? _volume : _vs.AudioVolume / 128f;
+			set {
+				_volume = Mathf.Clamp01(value);
+				if (_vs != null)
+					_vs.AudioVolume = (int)(_volume * 128);
+				OnVolume.Invoke(this, _volume);
+			}
+		}
+
+		public double Time {
+			get => MasterClock;
+			set => Seek(value);
+		}
+
+		public double Duration {
+			get {
+				if (_vs == null || _vs.Ic == null)
+					return double.NaN;
+				return _vs.Ic->duration / (double)ffmpeg.AV_TIME_BASE;
+			}
+		}
+
+		public double Progress {
+			get {
+				var d = Duration;
+				if (double.IsNaN(d) || d <= 0) return 0;
+				var t = Time;
+				if (double.IsNaN(t)) return 0;
+				return Math.Clamp(t / d, 0, 1);
+			}
+		}
+
+		public bool Loop {
+			get => _loop;
+			set {
+				_loop = value;
+				OnLoop.Invoke(this, value);
+			}
+		}
+
+		/// <summary>
+		/// Play from a query (URL, file path, or search term). If the query is not
+		/// a direct media URL, it is resolved through the VideoPlayer resolve pipeline.
+		/// </summary>
+		public void Play(string query) {
+			if (string.IsNullOrWhiteSpace(query))
+				return;
+			Url = query;
+			if (VideoPlayerResolver.IsMedia(this, query)) {
+				Open(query);
+				return;
+			}
+			PlayerResolver.ResolveAndOpenAsync(this, new VideoFetchOptions { Query = query }).Forget();
+		}
+
+		public void Stop() {
+			Close();
+			OnStop.Invoke(this);
+		}
+
+		internal void FireError(string message) {
+			OnMessage.Invoke(this, message);
+			OnError.Invoke(this, new Exception(message));
+		}
+
 		// ── Private ───────────────────────────────────────────────────────
 		private VideoState _vs;
 
@@ -72,7 +155,7 @@ namespace Nox.FFmpeg.Utils {
 
 		private void Start() {
 			if (AutoPlay && !string.IsNullOrWhiteSpace(Url))
-				Open(Url);
+				Play(Url);
 		}
 
 		private void Update() {
@@ -151,11 +234,12 @@ namespace Nox.FFmpeg.Utils {
 			if (Clip) Destroy(Clip);
 			Clip = AudioClip.Create("FFplay", _sampleRate, _audioChannels, _sampleRate, true, OnPCMRead);
 			OnClip.Invoke(Clip);
+			OnPlay.Invoke(this);
 		}
 
 		[ContextMenu("Play")]
 		public void Play()
-			=> Open(Url);
+			=> Play(Url);
 
 		[ContextMenu("Stop")]
 		public void Close() {
@@ -173,6 +257,7 @@ namespace Nox.FFmpeg.Utils {
 			if (_vs == null || _vs.Paused)
 				return;
 			_vs.TogglePause();
+			OnPause.Invoke(this);
 		}
 
 		[ContextMenu("Resume")]
@@ -180,10 +265,13 @@ namespace Nox.FFmpeg.Utils {
 			if (_vs is not { Paused: true })
 				return;
 			_vs.TogglePause();
+			OnResume.Invoke(this);
 		}
 
-		public void Seek(double seconds)
-			=> _vs?.StreamSeek((long)(seconds * ffmpeg.AV_TIME_BASE), 0, false);
+		public void Seek(double seconds) {
+			_vs?.StreamSeek((long)(seconds * ffmpeg.AV_TIME_BASE), 0, false);
+			OnSeek.Invoke(this, seconds);
+		}
 
 		public void SeekRelative(double delta) {
 			if (_vs == null)
