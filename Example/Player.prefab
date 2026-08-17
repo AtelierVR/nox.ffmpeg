@@ -330,4 +330,8 @@ MonoBehaviour:
   - Renderer: {fileID: 7660225869079733948}
     MaterialIndex: 0
     TextureProperty: _MainTex
+    Fit: 2
+    FlipVertical: 0
+    FlipHorizontal: 1
+    TransparentBars: 1
     UseSharedMaterial: 0
