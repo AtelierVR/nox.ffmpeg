@@ -111,7 +111,6 @@ namespace Nox.FFmpeg.Utils {
 		public void Play(string query) {
 			if (string.IsNullOrWhiteSpace(query))
 				return;
-			Url = query;
 			if (VideoPlayerResolver.IsMedia(this, query)) {
 				Open(query);
 				return;
@@ -210,13 +209,16 @@ namespace Nox.FFmpeg.Utils {
 		}
 
 		// ── Public API ────────────────────────────────────────────────────
-		/// Open and start playback from a URL (file, HLS, RTMP, RTSP …)
-		public void Open(string url) {
+		/// Open and start playback from a URL (file, HLS, RTMP, RTSP …).
+		/// When <paramref name="audioUrl"/> is provided, video and audio are opened
+		/// from two separate inputs (e.g. YouTube DASH streams).
+		public void Open(string url, string audioUrl = null) {
 			Close();
-			Url = url;
-			Debug.Log($"[FFplay] Opening {url}");
+			Debug.Log(string.IsNullOrEmpty(audioUrl)
+				? $"[FFplay] Opening {url}"
+				: $"[FFplay] Opening video {url} + audio {audioUrl}");
 
-			_vs            = new VideoState(url);
+			_vs = new VideoState(url) { AudioFilename = audioUrl };
 			_vs.AvSyncType      = AvSyncType;
 			_vs.TargetAudioFreq = _sampleRate; // ensure SWR resamples to Unity's output rate
 

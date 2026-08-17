@@ -22,13 +22,15 @@ namespace Nox.FFmpeg.Utils {
 				}
 
 				var (video, audio) = resolves[0].FindQuality();
-				var format = video ?? audio;
-				if (format == null) {
+				if (video == null && audio == null) {
 					player.FireError("No compatible stream found");
 					return;
 				}
 
-				player.Open(format.Url);
+				if (video != null)
+					player.Open(video.Url, audio?.Url);
+				else
+					player.Open(audio.Url);
 			} catch (Exception e) {
 				player.FireError(e.Message);
 				Debug.LogException(e);

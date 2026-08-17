@@ -37,6 +37,8 @@ namespace Nox.FFmpeg {
 		public bool Realtime;
 		public bool Eof;
 		public string Filename;
+		/// Optional second input (audio-only URL) played alongside <see cref="Filename"/>.
+		public string AudioFilename;
 
 		public int AudioStream = -1;
 		public int VideoStream = -1;
@@ -77,6 +79,7 @@ namespace Nox.FFmpeg {
 		public int AvSyncType = Constants.AV_SYNC_AUDIO_MASTER;
 
 		public bool SeekReq;
+		public bool AudioSeekReq;
 		public int SeekFlags;
 		public long SeekPos,
 			SeekRel;
@@ -124,7 +127,9 @@ namespace Nox.FFmpeg {
 
 		// ── threading ─────────────────────────────────────────────────────
 		public Thread ReadTid;
+		private Thread _audioReadTid;
 		private readonly SemaphoreSlim _continueReadThread = new(0);
+		private AVFormatContext* _icAudio;
 
 		// ── Controller callbacks (Unity output) ───────────────────────────
 		/// Called from VideoState (Model) when a video frame is ready.
@@ -192,7 +197,8 @@ namespace Nox.FFmpeg {
 			SeekPos   = pos;
 			SeekRel   = rel;
 			SeekFlags = (SeekFlags & ~ffmpeg.AVSEEK_FLAG_BYTE) | (byBytes ? ffmpeg.AVSEEK_FLAG_BYTE : 0);
-			SeekReq   = true;
+			SeekReq       = true;
+			AudioSeekReq  = true;
 			_continueReadThread.Release();
 		}
 
@@ -502,19 +508,19 @@ namespace Nox.FFmpeg {
 		// ─────────────────────────────────────────────────────────────────
 		// stream_component_open
 		// ─────────────────────────────────────────────────────────────────
-		public int StreamComponentOpen(int streamIndex) {
-			if (streamIndex < 0 || streamIndex >= (int)Ic->nb_streams)
+		public int StreamComponentOpen(int streamIndex, AVFormatContext* ic) {
+			if (streamIndex < 0 || streamIndex >= (int)ic->nb_streams)
 				return -1;
 
 			AVCodecContext* avctx = ffmpeg.avcodec_alloc_context3(null);
 			if (avctx == null)
 				return ffmpeg.AVERROR(ffmpeg.ENOMEM);
 
-			int ret = ffmpeg.avcodec_parameters_to_context(avctx, Ic->streams[streamIndex]->codecpar);
+			int ret = ffmpeg.avcodec_parameters_to_context(avctx, ic->streams[streamIndex]->codecpar);
 			if (ret < 0)
 				goto fail;
 
-			avctx->pkt_timebase = Ic->streams[streamIndex]->time_base;
+			avctx->pkt_timebase = ic->streams[streamIndex]->time_base;
 			var codec = ffmpeg.avcodec_find_decoder(avctx->codec_id);
 			if (codec == null) {
 				ret = ffmpeg.AVERROR(ffmpeg.EINVAL);
@@ -527,7 +533,7 @@ namespace Nox.FFmpeg {
 				goto fail;
 			}
 
-			Ic->streams[streamIndex]->discard = AVDiscard.AVDISCARD_DEFAULT;
+			ic->streams[streamIndex]->discard = AVDiscard.AVDISCARD_DEFAULT;
 
 			switch (avctx->codec_type) {
 				case AVMediaType.AVMEDIA_TYPE_AUDIO:
@@ -541,10 +547,10 @@ namespace Nox.FFmpeg {
 					AudioTgtFmt        = AVSampleFormat.AV_SAMPLE_FMT_S16;
 					AudioDiffThreshold = AudioHwBufSize; // set by controller after opening
 
+					AudioSt     = ic->streams[streamIndex];
 					AudioStream = streamIndex;
-					AudioSt     = Ic->streams[streamIndex];
 					AudDec      = new Decoder(avctx, AudioQ, () => _continueReadThread.Release());
-					if ((Ic->iformat->flags & ffmpeg.AVFMT_NOTIMESTAMPS) != 0) {
+					if ((ic->iformat->flags & ffmpeg.AVFMT_NOTIMESTAMPS) != 0) {
 						AudDec.StartPts   = AudioSt->start_time;
 						AudDec.StartPtsTb = AudioSt->time_base;
 					}
@@ -555,7 +561,7 @@ namespace Nox.FFmpeg {
 
 				case AVMediaType.AVMEDIA_TYPE_VIDEO:
 					VideoStream = streamIndex;
-					VideoSt     = Ic->streams[streamIndex];
+					VideoSt     = ic->streams[streamIndex];
 					VidDec      = new Decoder(avctx, VideoQ, () => _continueReadThread.Release());
 					VideoQ.Start();
 					VidDec.DecoderTid = new Thread(VideoThread) { IsBackground = true, Name = "ffplay_video" };
@@ -564,7 +570,7 @@ namespace Nox.FFmpeg {
 
 				case AVMediaType.AVMEDIA_TYPE_SUBTITLE:
 					SubtitleStream = streamIndex;
-					SubtitleSt     = Ic->streams[streamIndex];
+					SubtitleSt     = ic->streams[streamIndex];
 					SubDec         = new Decoder(avctx, SubtitleQ, () => _continueReadThread.Release());
 					SubtitleQ.Start();
 					SubDec.DecoderTid = new Thread(SubtitleThread) { IsBackground = true, Name = "ffplay_subtitle" };
@@ -578,10 +584,10 @@ namespace Nox.FFmpeg {
 		}
 
 		// stream_component_close
-		public void StreamComponentClose(int streamIndex) {
-			if (streamIndex < 0 || streamIndex >= (int)Ic->nb_streams)
+		public void StreamComponentClose(int streamIndex, AVFormatContext* ic) {
+			if (streamIndex < 0 || streamIndex >= (int)ic->nb_streams)
 				return;
-			var par = Ic->streams[streamIndex]->codecpar;
+			var par = ic->streams[streamIndex]->codecpar;
 
 			void AbortDecoder(Decoder d, FrameQueue fq) {
 				d.Queue.Abort();
@@ -623,7 +629,7 @@ namespace Nox.FFmpeg {
 					SubtitleSt     = null;
 					break;
 			}
-			Ic->streams[streamIndex]->discard = AVDiscard.AVDISCARD_ALL;
+			ic->streams[streamIndex]->discard = AVDiscard.AVDISCARD_ALL;
 		}
 
 		// ─────────────────────────────────────────────────────────────────
@@ -774,6 +780,7 @@ namespace Nox.FFmpeg {
 		private static bool StreamHasEnoughPackets(AVStream* st, int streamId, PacketQueue q) {
 			return streamId < 0
 				|| q.AbortRequest
+				|| st == null
 				|| (st->disposition & ffmpeg.AV_DISPOSITION_ATTACHED_PIC) != 0
 				|| (q.NbPackets > Constants.MIN_FRAMES
 					&& (q.Duration == 0 || ffmpeg.av_q2d(st->time_base) * q.Duration > 1.0));
@@ -847,32 +854,36 @@ namespace Nox.FFmpeg {
 				MaxFrameDuration = (ic->iformat->flags & ffmpeg.AVFMT_TS_DISCONT) != 0 ? 10.0 : 3600.0;
 				Realtime         = IsRealtime(ic);
 
-				// select best streams
+				// select best streams (audio may come from a separate input via AudioFilename)
+				bool hasSeparateAudio = !string.IsNullOrEmpty(AudioFilename);
 				int[] stIndex = new int[ (int)AVMediaType.AVMEDIA_TYPE_NB ];
 				for (int i = 0; i < stIndex.Length; i++)
 					stIndex[i] = -1;
 
 				stIndex[(int)AVMediaType.AVMEDIA_TYPE_VIDEO] =
 					ffmpeg.av_find_best_stream(ic, AVMediaType.AVMEDIA_TYPE_VIDEO, -1, -1, null, 0);
-				stIndex[(int)AVMediaType.AVMEDIA_TYPE_AUDIO] =
-					ffmpeg.av_find_best_stream(ic, AVMediaType.AVMEDIA_TYPE_AUDIO,
-						stIndex[(int)AVMediaType.AVMEDIA_TYPE_AUDIO],
-						stIndex[(int)AVMediaType.AVMEDIA_TYPE_VIDEO], null, 0);
+				stIndex[(int)AVMediaType.AVMEDIA_TYPE_AUDIO] = hasSeparateAudio
+					? -1
+					: ffmpeg.av_find_best_stream(ic, AVMediaType.AVMEDIA_TYPE_AUDIO,
+						-1, stIndex[(int)AVMediaType.AVMEDIA_TYPE_VIDEO], null, 0);
 				stIndex[(int)AVMediaType.AVMEDIA_TYPE_SUBTITLE] =
 					ffmpeg.av_find_best_stream(ic, AVMediaType.AVMEDIA_TYPE_SUBTITLE,
-						stIndex[(int)AVMediaType.AVMEDIA_TYPE_SUBTITLE],
+						-1,
 						stIndex[(int)AVMediaType.AVMEDIA_TYPE_AUDIO] >= 0
 							? stIndex[(int)AVMediaType.AVMEDIA_TYPE_AUDIO]
 							: stIndex[(int)AVMediaType.AVMEDIA_TYPE_VIDEO], null, 0);
 
 				if (stIndex[(int)AVMediaType.AVMEDIA_TYPE_AUDIO] >= 0)
-					StreamComponentOpen(stIndex[(int)AVMediaType.AVMEDIA_TYPE_AUDIO]);
+					StreamComponentOpen(stIndex[(int)AVMediaType.AVMEDIA_TYPE_AUDIO], ic);
 
 				if (stIndex[(int)AVMediaType.AVMEDIA_TYPE_VIDEO] >= 0)
-					StreamComponentOpen(stIndex[(int)AVMediaType.AVMEDIA_TYPE_VIDEO]);
+					StreamComponentOpen(stIndex[(int)AVMediaType.AVMEDIA_TYPE_VIDEO], ic);
 
 				if (stIndex[(int)AVMediaType.AVMEDIA_TYPE_SUBTITLE] >= 0)
-					StreamComponentOpen(stIndex[(int)AVMediaType.AVMEDIA_TYPE_SUBTITLE]);
+					StreamComponentOpen(stIndex[(int)AVMediaType.AVMEDIA_TYPE_SUBTITLE], ic);
+
+				if (hasSeparateAudio)
+					StartAudioReadThread();
 
 				if (VideoStream < 0 && AudioStream < 0) {
 					Debug.LogError($"[FFplay] Failed to open streams in {Filename}");
@@ -951,7 +962,7 @@ namespace Nox.FFmpeg {
 						if ((ret2 == ffmpeg.AVERROR_EOF || ffmpeg.avio_feof(ic->pb) != 0) && !Eof) {
 							if (VideoStream >= 0)
 								VideoQ.PutNullPacket(pkt, VideoStream);
-							if (AudioStream >= 0)
+							if (!hasSeparateAudio && AudioStream >= 0)
 								AudioQ.PutNullPacket(pkt, AudioStream);
 							if (SubtitleStream >= 0)
 								SubtitleQ.PutNullPacket(pkt, SubtitleStream);
@@ -969,7 +980,7 @@ namespace Nox.FFmpeg {
 					bool inRange = (pktTs - (streamStartTime != ffmpeg.AV_NOPTS_VALUE ? streamStartTime : 0))
 						* ffmpeg.av_q2d(ic->streams[pkt->stream_index]->time_base) >= 0;
 
-					if (pkt->stream_index == AudioStream && inRange)
+					if (!hasSeparateAudio && pkt->stream_index == AudioStream && inRange)
 						AudioQ.Put(pkt);
 					else if (pkt->stream_index == VideoStream && inRange
 						&& (VideoSt->disposition & ffmpeg.AV_DISPOSITION_ATTACHED_PIC) == 0)
@@ -986,6 +997,101 @@ namespace Nox.FFmpeg {
 			}
 		}
 
+		// ─────────────────────────────────────────────────────────────────
+		// audio read thread — opens a separate audio-only input (e.g. YouTube
+		// DASH audio stream) and feeds AudioQ.
+		// ─────────────────────────────────────────────────────────────────
+		private void StartAudioReadThread() {
+			_audioReadTid = new Thread(AudioReadThread) { IsBackground = true, Name = "ffplay_read_audio" };
+			_audioReadTid.Start();
+		}
+
+		private void AudioReadThread() {
+			AVFormatContext* ic  = null;
+			AVPacket*        pkt = ffmpeg.av_packet_alloc();
+			if (pkt == null)
+				return;
+
+			try {
+				ic = ffmpeg.avformat_alloc_context();
+				if (ic == null)
+					return;
+
+				var self    = GCHandle.Alloc(this);
+				var selfPtr = (void*)GCHandle.ToIntPtr(self);
+				var cbDelegate = new AVIOInterruptCB_callback(opaque => {
+					var h = GCHandle.FromIntPtr((IntPtr)opaque);
+					return h.IsAllocated && ((VideoState)h.Target).AbortRequest ? 1 : 0;
+				});
+				var cb = new AVIOInterruptCB_callback_func { Pointer = Marshal.GetFunctionPointerForDelegate(cbDelegate) };
+				ic->interrupt_callback = new AVIOInterruptCB { callback = cb, opaque = selfPtr };
+
+				int err = ffmpeg.avformat_open_input(&ic, AudioFilename, null, null);
+				if (err < 0) {
+					Debug.LogError($"[FFplay] Cannot open audio {AudioFilename}: {Helper.AvErr(err)}");
+					self.Free();
+					return;
+				}
+
+				_icAudio = ic;
+
+				err = ffmpeg.avformat_find_stream_info(ic, null);
+				if (err < 0)
+					Debug.LogWarning($"[FFplay] {AudioFilename}: could not find codec parameters");
+
+				int audioIndex = ffmpeg.av_find_best_stream(ic, AVMediaType.AVMEDIA_TYPE_AUDIO, -1, -1, null, 0);
+				if (audioIndex >= 0)
+					StreamComponentOpen(audioIndex, ic);
+
+				if (AudioStream < 0) {
+					Debug.LogError($"[FFplay] Failed to open audio stream in {AudioFilename}");
+					return;
+				}
+
+				for (;;) {
+					if (AbortRequest)
+						break;
+
+					if (AudioSeekReq) {
+						int r2 = ffmpeg.avformat_seek_file(ic, -1, long.MinValue, SeekPos, SeekPos, 0);
+						if (r2 < 0)
+							Debug.LogError($"[FFplay] audio seek error: {Helper.AvErr(r2)}");
+						else
+							AudioQ.Flush();
+						AudioSeekReq = false;
+					}
+
+					if (AudioQ.Size > Constants.MAX_QUEUE_SIZE
+						|| StreamHasEnoughPackets(AudioSt, AudioStream, AudioQ)) {
+						_continueReadThread.Wait(10);
+						continue;
+					}
+
+					int ret2 = ffmpeg.av_read_frame(ic, pkt);
+					if (ret2 < 0) {
+						if (ret2 == ffmpeg.AVERROR_EOF || ffmpeg.avio_feof(ic->pb) != 0) {
+							AudioQ.PutNullPacket(pkt, AudioStream);
+							_continueReadThread.Wait(10);
+							continue;
+						}
+						if (ic->pb != null && ic->pb->error != 0)
+							break;
+						_continueReadThread.Wait(10);
+						continue;
+					}
+
+					if (pkt->stream_index == AudioStream)
+						AudioQ.Put(pkt);
+					else
+						ffmpeg.av_packet_unref(pkt);
+				}
+			} finally {
+				if (_icAudio == null && ic != null)
+					ffmpeg.avformat_close_input(&ic);
+				ffmpeg.av_packet_free(&pkt);
+			}
+		}
+
 		private void SignalQuit()
 			=> OnVideoFrameReady = null; // Controller will notice null
 
@@ -995,19 +1101,26 @@ namespace Nox.FFmpeg {
 		public void Dispose() {
 			AbortRequest = true;
 			_continueReadThread.Release(); // unblock any Wait() immediately
+			_continueReadThread.Release(); // also wake a possible audio read thread
 			ReadTid?.Join();
+			_audioReadTid?.Join();
 
 			if (AudioStream >= 0)
-				StreamComponentClose(AudioStream);
+				StreamComponentClose(AudioStream, _icAudio != null ? _icAudio : Ic);
 			if (VideoStream >= 0)
-				StreamComponentClose(VideoStream);
+				StreamComponentClose(VideoStream, Ic);
 			if (SubtitleStream >= 0)
-				StreamComponentClose(SubtitleStream);
+				StreamComponentClose(SubtitleStream, Ic);
 
 			if (Ic != null) {
 				var ic = Ic;
 				ffmpeg.avformat_close_input(&ic);
 				Ic = null;
+			}
+			if (_icAudio != null) {
+				var ic2 = _icAudio;
+				ffmpeg.avformat_close_input(&ic2);
+				_icAudio = null;
 			}
 			VideoQ.Dispose();
 			AudioQ.Dispose();
