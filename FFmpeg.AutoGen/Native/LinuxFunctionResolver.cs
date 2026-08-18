@@ -8,7 +8,7 @@ namespace FFmpeg.AutoGen.Native {
 
         private const int RTLD_NOW = 0x002;
 
-        protected override string GetNativeLibraryName(string libraryName, int version) => $"lib{libraryName}.so.{version}";
+        protected override string GetNativeLibraryName(string libraryName, int version) => $"{libraryName}-{version}.so";
 
         protected override IntPtr LoadNativeLibrary(string libraryName) => dlopen(libraryName, RTLD_NOW);
 

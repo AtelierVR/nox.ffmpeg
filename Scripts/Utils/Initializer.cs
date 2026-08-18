@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using FFmpeg.AutoGen;
 using Nox.FFmpeg.Executor;
 using UnityEngine;
@@ -37,7 +38,9 @@ namespace Nox.FFmpeg.Helpers {
 
 			var extension = libAPI.GetExtension();
 
-			foreach (var (lib, ver) in ffmpeg.LibraryVersionMap) {
+			// Load in dependency order (leaves first) so `dlopen(..., RTLD_NOW)`
+			// can resolve cross-library symbols between the versioned FFmpeg modules.
+			foreach (var (lib, ver) in DependencyOrder(ffmpeg.LibraryVersionMap.Keys)) {
 				var nativeName = method.Invoke(resolver, new object[] { lib, ver }) as string;
 				if (string.IsNullOrEmpty(nativeName))
 					continue;
@@ -55,6 +58,34 @@ namespace Nox.FFmpeg.Helpers {
 			}
 		}
 
+		/// <summary>
+		/// Orders FFmpeg libraries so that dependencies are loaded before their dependents
+		/// (leaves of <see cref="FunctionResolverBase.LibraryDependenciesMap"/> come first).
+		/// </summary>
+		private static IEnumerable<(string lib, int ver)> DependencyOrder(IEnumerable<string> libs) {
+			var map = FunctionResolverBase.LibraryDependenciesMap;
+			var resolved = new HashSet<string>();
+			var visiting = new HashSet<string>();
+			var list = new List<string>();
+
+			void Visit(string lib) {
+				if (resolved.Contains(lib)) return;
+				if (!visiting.Add(lib)) return; // cycle guard
+				foreach (var dep in map.TryGetValue(lib, out var deps) ? deps : Array.Empty<string>())
+					Visit(dep);
+				visiting.Remove(lib);
+				resolved.Add(lib);
+				list.Add(lib);
+			}
+
+			foreach (var lib in libs)
+				Visit(lib);
+
+			foreach (var lib in list)
+				if (ffmpeg.LibraryVersionMap.TryGetValue(lib, out var ver))
+					yield return (lib, ver);
+		}
+
 		public static void Initialize() {
 			if (_initialized)
 				return;
@@ -68,6 +99,10 @@ namespace Nox.FFmpeg.Helpers {
 
 			LoadLibraries();
 			DynamicallyLoadedBindings.Initialize();
+
+			// Register network protocols (http, https, tls, …). Without this,
+			// avformat_open_input on a URL fails with "Protocol not found".
+			ffmpeg.avformat_network_init();
 		}
 	}
 }
