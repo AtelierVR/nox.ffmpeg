@@ -89,12 +89,12 @@ namespace Nox.FFmpeg.Components {
 
 		private void HandleStateChanged(PlayerState state) {
 			if (Video == null) return;
-			Video.OnFrame.AddListener(HandleFrame);
+			Video.OnTexture.AddListener(HandleFrame);
             HandleFrame(Video.Frame);
 		}
 
 		private void OnDisable() {
-			Video?.OnFrame.RemoveListener(HandleFrame);
+			Video?.OnTexture.RemoveListener(HandleFrame);
 			Source.OnStateChanged.RemoveListener(HandleStateChanged);
 		}
 

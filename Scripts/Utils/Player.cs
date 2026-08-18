@@ -147,7 +147,7 @@ namespace Nox.FFmpeg {
 			if (string.IsNullOrWhiteSpace(query))
 				return;
 			if (VideoPlayerResolver.IsMedia(this, query)) {
-				Open(query);
+				Open(new Flux(StreamType.Av, query));
 				return;
 			}
 			PlayerResolver.ResolveAndOpenAsync(this, new VideoFetchOptions { Query = query }).Forget();
@@ -189,14 +189,20 @@ namespace Nox.FFmpeg {
 		/// Open and start playback from a URL (file, HLS, RTMP, RTSP …).
 		/// When <paramref name="audioUrl"/> is provided, video and audio are opened
 		/// from two separate inputs (e.g. YouTube DASH streams).
-		public void Open(string videoUrl, string audioUrl = null) {
+		public void Open(params Flux[] flux) {
 			Close();
-			Debug.Log(string.IsNullOrEmpty(audioUrl)
-				? $"[FFplay] Opening {videoUrl}"
-				: $"[FFplay] Opening video {videoUrl} + audio {audioUrl}");
+			if (flux.Length == 0) {
+				Debug.LogWarning($"[FFplay] No flux.");
+				return;
+			}
+			foreach (var f in flux)
+				if (string.IsNullOrEmpty(f.Url)) {
+					Debug.LogWarning($"[FFplay] Flux {f.Type} is empty.");
+					return;
+				}
+			Debug.Log($"[FFplay] Opening {string.Join(", ", flux.Select(e => e.Url))}");
 
-            State = new PlayerState
-            {
+            State = new PlayerState {
                 AvSyncType = AvSyncType,
                 Loop = Loop
             };
@@ -204,18 +210,15 @@ namespace Nox.FFmpeg {
 
             // Build the streams (flux) and their typed handlers.
             var streams  = new List<IStream>();
-			if (!string.IsNullOrEmpty(audioUrl)) {
-				streams.Add(new MediaStream(StreamType.Audio, audioUrl));
-				streams.Add(new MediaStream(StreamType.Video, videoUrl));
-			} else {
-				streams.Add(new MediaStream(StreamType.Video | StreamType.Audio, videoUrl));
-			}
+			foreach (var f in flux) 
+				streams.Add(new MediaStream(f.Type, f.Url, f.Headers));
 
 			// Handlers own their typed logic; PlayerState just stores them.
 			var audio = new AudioHandler(State);
 
 			var video = new VideoHandler(State);
-			video.OnFrame.AddListener(frame => OnTexture.Invoke(this, frame));
+			video.OnTexture.AddListener(frame => OnTexture.Invoke(this, frame));
+			video.OnResolution.AddListener(res => OnResolution.Invoke(this, res));
 
 			var subtitle = new SubtitleHandler(State);
 

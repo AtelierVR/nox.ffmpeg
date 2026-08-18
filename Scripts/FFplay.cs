@@ -87,16 +87,16 @@ namespace Nox.FFmpeg {
 			=> Array.Find(Handlers, h => h is T) as T;
 
 		/// Main input URL (the video / combined stream).
-		public string VideoUrl 
+		public IStream VideoUrl 
 			=> GetStreamUrl(StreamType.Video);
 		/// Separate audio-only input URL, or null when audio lives in the main input.
-		public string AudioUrl 
+		public IStream AudioUrl 
 			=> GetStreamUrl(StreamType.Audio);
 
-		private string GetStreamUrl(StreamType type) {
+		private IStream GetStreamUrl(StreamType type) {
 			for (int i = 0; i < Streams.Length; i++)
 				if ((Streams[i].Type & type) != 0 && !string.IsNullOrEmpty(Streams[i].Url))
-					return Streams[i].Url;
+					return Streams[i];
 			return null;
 		}
 
@@ -307,12 +307,21 @@ namespace Nox.FFmpeg {
 				var cb = new AVIOInterruptCB_callback_func { Pointer = Marshal.GetFunctionPointerForDelegate(cbDelegate) };
 				ic->interrupt_callback = new AVIOInterruptCB { callback = cb, opaque = selfPtr };
 
-				string videoUrl = VideoUrl ?? (Streams.Length > 0 ? Streams[0].Url : null);
-				bool hasSeparateAudio = !string.IsNullOrEmpty(AudioUrl) && !string.Equals(AudioUrl, videoUrl);
+				var videoUrl = VideoUrl ?? (Streams.Length > 0 ? Streams[0] : null);
+				if (videoUrl == null || string.IsNullOrEmpty(videoUrl.Url)) {
+					Debug.LogError("[FFplay] No video URL to open.");
+					SignalQuit();
+					return;
+				}
+				bool hasSeparateAudio = AudioUrl != null
+					&& !string.IsNullOrEmpty(AudioUrl.Url)
+					&& !string.Equals(AudioUrl.Url, videoUrl.Url, StringComparison.Ordinal);
 
-				int err = ffmpeg.avformat_open_input(&ic, videoUrl, null, null);
+				var opts = Helper.BuildHeaders(videoUrl.Url, videoUrl.Headers);
+				int err = ffmpeg.avformat_open_input(&ic, videoUrl.Url, null, &opts);
+				ffmpeg.av_dict_free(&opts);
 				if (err < 0) {
-					Debug.LogError($"[FFplay] Cannot open {videoUrl}: {Helper.ErrorToString(err)}");
+					Debug.LogError($"[FFplay] Cannot open {videoUrl.Url}: {Helper.ErrorToString(err)}");
 					self.Free();
 					SignalQuit();
 					return;
@@ -503,7 +512,9 @@ namespace Nox.FFmpeg {
 				var cb = new AVIOInterruptCB_callback_func { Pointer = Marshal.GetFunctionPointerForDelegate(cbDelegate) };
 				ic->interrupt_callback = new AVIOInterruptCB { callback = cb, opaque = selfPtr };
 
-				int err = ffmpeg.avformat_open_input(&ic, AudioUrl, null, null);
+				var opts = Helper.BuildHeaders(AudioUrl.Url, AudioUrl.Headers);
+				int err = ffmpeg.avformat_open_input(&ic, AudioUrl.Url, null, &opts);
+				ffmpeg.av_dict_free(&opts);
 				if (err < 0) {
 					Debug.LogError($"[FFplay] Cannot open audio {AudioUrl}: {Helper.ErrorToString(err)}");
 					self.Free();
@@ -604,7 +615,7 @@ namespace Nox.FFmpeg {
 
 			foreach(var h in Handlers)
 				h.Dispose();
-				
+
 			ContinueReadThread.Dispose();
 		}
 	}

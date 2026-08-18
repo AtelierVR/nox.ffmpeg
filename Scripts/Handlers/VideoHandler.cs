@@ -9,6 +9,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using Helper = Nox.FFmpeg.Helpers.Helper;
 using System.Drawing;
+using Object = UnityEngine.Object;
 
 namespace Nox.FFmpeg.Handlers {
 	/// Decodes video frames and converts them to a <see cref="Texture2D"/>.
@@ -245,7 +246,7 @@ namespace Nox.FFmpeg.Handlers {
 		}
 
 		public Texture2D Frame { get; private set; }
-		public UnityEvent<Texture2D> OnFrame { get; } = new();
+		public UnityEvent<Texture2D> OnTexture { get; } = new();
 
 		public Vector2Int Resolution { get; private set; } = Vector2Int.zero;
 		public UnityEvent<Vector2Int> OnResolution { get; } = new();
@@ -314,19 +315,23 @@ namespace Nox.FFmpeg.Handlers {
 		}
 
 		private void Upload(int w, int h, byte[] buf) {
+			var n = false;
 			if (!Frame || Frame.width != w || Frame.height != h) {
 				if (Frame)
-					UnityEngine.Object.Destroy(Frame);
+					Object.Destroy(Frame);
 				Frame = new Texture2D(w, h, TextureFormat.RGB24, false) { name = "FFplay" };
+				n = true;
+			}
+			Frame.LoadRawTextureData(buf);
+			Frame.Apply(false);
+			if (n) {
 				var res = new Vector2Int(w, h);
 				if (Resolution != res) {
 					Resolution = res;
 					OnResolution.Invoke(res);
 				}
+				OnTexture.Invoke(Frame);
 			}
-			Frame.LoadRawTextureData(buf);
-			Frame.Apply(false);
-			OnFrame.Invoke(Frame);
 		}
 	}
 }
