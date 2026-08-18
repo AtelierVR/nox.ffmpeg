@@ -40,24 +40,8 @@ namespace Nox.FFmpeg {
 		public bool Eof;
 		public bool Loop;
 
-		// ── clocks ────────────────────────────────────────────────────────
-		public Utils.Clock AudClk,
-			VidClk,
-			ExtClk;
-
-		// ── queues ────────────────────────────────────────────────────────
-		public PacketQueue AudioQ = new();
-		public PacketQueue VideoQ = new();
-		public PacketQueue SubtitleQ = new();
-
-		public FrameQueue PictQ,
-			SampQ,
-			SubpQ;
-
-		// ── decoders ──────────────────────────────────────────────────────
-		public Decoder AudDec,
-			VidDec,
-			SubDec;
+		// ── external clock (stream clocks live on their handlers) ─────────
+		public Utils.Clock ExtClk;
 
 		// ── state ─────────────────────────────────────────────────────────
 		public bool AbortRequest;
@@ -159,12 +143,6 @@ namespace Nox.FFmpeg {
 		// init_clock / stream_open equivalent
 		// ─────────────────────────────────────────────────────────────────
 		public PlayerState() {
-			PictQ    = new FrameQueue(VideoQ, Constants.VIDEO_PICTURE_QUEUE_SIZE, true);
-			SampQ    = new FrameQueue(AudioQ, Constants.SAMPLE_QUEUE_SIZE, true);
-			SubpQ    = new FrameQueue(SubtitleQ, 16, false);
-
-			AudClk = new Utils.Clock(() => AudioQ.GetSerial());
-			VidClk = new Utils.Clock(() => VideoQ.GetSerial());
 			ExtClk = new Utils.Clock(() => ExtClk?.Serial ?? -1); // self-referential like ffplay.c
 
 			AudioDiffAvgCoef = Math.Exp(Math.Log(0.01) / Constants.AUDIO_DIFF_AVG_NB);
@@ -184,19 +162,19 @@ namespace Nox.FFmpeg {
 		// get_master_clock
 		public double GetMasterClock()
 			=> GetMasterSyncType() switch {
-				Constants.AV_SYNC_VIDEO_MASTER => VidClk.Get(),
-				Constants.AV_SYNC_AUDIO_MASTER => AudClk.Get(),
+				Constants.AV_SYNC_VIDEO_MASTER => Video.VidClk.Get(),
+				Constants.AV_SYNC_AUDIO_MASTER => Audio.AudClk.Get(),
 				_                              => ExtClk.Get(),
 			};
 
 		// check_external_clock_speed
 		public void CheckExternalClockSpeed() {
-			if ((Video.StreamIndex >= 0 && VideoQ.NbPackets <= Constants.EXTERNAL_CLOCK_MIN_FRAMES) ||
-				(Audio.StreamIndex >= 0 && AudioQ.NbPackets <= Constants.EXTERNAL_CLOCK_MIN_FRAMES))
+			if ((Video.StreamIndex >= 0 && Video.VideoQ.NbPackets <= Constants.EXTERNAL_CLOCK_MIN_FRAMES) ||
+				(Audio.StreamIndex >= 0 && Audio.AudioQ.NbPackets <= Constants.EXTERNAL_CLOCK_MIN_FRAMES))
 				ExtClk.SetSpeed(Math.Max(Constants.EXTERNAL_CLOCK_SPEED_MIN,
 					ExtClk.Speed - Constants.EXTERNAL_CLOCK_SPEED_STEP));
-			else if ((Video.StreamIndex < 0 || VideoQ.NbPackets > Constants.EXTERNAL_CLOCK_MAX_FRAMES) &&
-				(Audio.StreamIndex < 0 || AudioQ.NbPackets > Constants.EXTERNAL_CLOCK_MAX_FRAMES))
+			else if ((Video.StreamIndex < 0 || Video.VideoQ.NbPackets > Constants.EXTERNAL_CLOCK_MAX_FRAMES) &&
+				(Audio.StreamIndex < 0 || Audio.AudioQ.NbPackets > Constants.EXTERNAL_CLOCK_MAX_FRAMES))
 				ExtClk.SetSpeed(Math.Min(Constants.EXTERNAL_CLOCK_SPEED_MAX,
 					ExtClk.Speed + Constants.EXTERNAL_CLOCK_SPEED_STEP));
 			else {
@@ -221,13 +199,13 @@ namespace Nox.FFmpeg {
 		// stream_toggle_pause
 		public void StreamTogglePause() {
 			if (Paused) {
-				FrameTimer += (double)ffmpeg.av_gettime_relative() / 1_000_000.0 - VidClk.LastUpdated;
+				FrameTimer += (double)ffmpeg.av_gettime_relative() / 1_000_000.0 - Video.VidClk.LastUpdated;
 				if (ReadPauseReturn != ffmpeg.AVERROR(38 /* ENOSYS */))
-					VidClk.Paused = false;
-				VidClk.Set(VidClk.Get(), VidClk.Serial);
+					Video.VidClk.Paused = false;
+				Video.VidClk.Set(Video.VidClk.Get(), Video.VidClk.Serial);
 			}
 			ExtClk.Set(ExtClk.Get(), ExtClk.Serial);
-			Paused = AudClk.Paused = VidClk.Paused = ExtClk.Paused = !Paused;
+			Paused = Audio.AudClk.Paused = Video.VidClk.Paused = ExtClk.Paused = !Paused;
 		}
 
 		public void TogglePause() {
@@ -244,8 +222,8 @@ namespace Nox.FFmpeg {
 
 		// update_video_pts
 		private void UpdateVideoPts(double pts, int serial) {
-			VidClk.Set(pts, serial);
-			ExtClk.SyncToSlave(VidClk);
+			Video.VidClk.Set(pts, serial);
+			ExtClk.SyncToSlave(Video.VidClk);
 		}
 
 		// vp_duration
@@ -262,7 +240,7 @@ namespace Nox.FFmpeg {
 		private double ComputeTargetDelay(double delay) {
 			if (GetMasterSyncType() == Constants.AV_SYNC_VIDEO_MASTER)
 				return delay;
-			double diff = VidClk.Get() - GetMasterClock();
+			double diff = Video.VidClk.Get() - GetMasterClock();
 			double syncThr = Math.Max(Constants.AV_SYNC_THRESHOLD_MIN,
 				Math.Min(Constants.AV_SYNC_THRESHOLD_MAX, delay));
 			if (!double.IsNaN(diff) && Math.Abs(diff) < MaxFrameDuration) {
@@ -288,14 +266,14 @@ namespace Nox.FFmpeg {
 				return remainingTime;
 
 		retry:
-			if (PictQ.NbRemaining() == 0)
+			if (Video.PictQ.NbRemaining() == 0)
 				return remainingTime;
 
-			Frame lastvp = PictQ.PeekLast();
-			Frame vp     = PictQ.Peek();
+			Frame lastvp = Video.PictQ.PeekLast();
+			Frame vp     = Video.PictQ.Peek();
 
-			if (vp.Serial != VideoQ.Serial) {
-				PictQ.Next();
+			if (vp.Serial != Video.VideoQ.Serial) {
+				Video.PictQ.Next();
 				goto retry;
 			}
 			if (lastvp.Serial != vp.Serial)
@@ -318,24 +296,24 @@ namespace Nox.FFmpeg {
 			if (!double.IsNaN(vp.Pts))
 				UpdateVideoPts(vp.Pts, vp.Serial);
 
-			if (PictQ.NbRemaining() > 1) {
-				Frame  nextvp = PictQ.PeekNext();
+			if (Video.PictQ.NbRemaining() > 1) {
+				Frame  nextvp = Video.PictQ.PeekNext();
 				double dur    = VpDuration(vp, nextvp);
 				if (Step == 0 && time > FrameTimer + dur) {
 					FrameDropsLate++;
-					PictQ.Next();
+					Video.PictQ.Next();
 					goto retry;
 				}
 			}
 
-			PictQ.Next();
+			Video.PictQ.Next();
 			ForceRefresh = true;
 			if (Step != 0 && !Paused)
 				StreamTogglePause();
 
 		display:
-			if (ForceRefresh && PictQ.NbRemaining() > 0)
-				OnVideoFrameReady?.Invoke((IntPtr)PictQ.PeekLast().AVFrame);
+			if (ForceRefresh && Video.PictQ.NbRemaining() > 0)
+				OnVideoFrameReady?.Invoke((IntPtr)Video.PictQ.PeekLast().AVFrame);
 
 			ForceRefresh = false;
 			return remainingTime;
@@ -349,7 +327,7 @@ namespace Nox.FFmpeg {
 			if (GetMasterSyncType() == Constants.AV_SYNC_AUDIO_MASTER)
 				return wanted;
 
-			double diff = AudClk.Get() - GetMasterClock();
+			double diff = Audio.AudClk.Get() - GetMasterClock();
 			double avgDiff;
 			if (!double.IsNaN(diff) && Math.Abs(diff) < Constants.AV_NOSYNC_THRESHOLD) {
 				AudioDiffCum = diff + AudioDiffAvgCoef * AudioDiffCum;
@@ -381,11 +359,11 @@ namespace Nox.FFmpeg {
 
 			Frame af;
 			do {
-				af = SampQ.PeekReadable();
+				af = Audio.SampQ.PeekReadable();
 				if (af == null)
 					return -1;
-				SampQ.Next();
-			} while (af.Serial != AudioQ.Serial);
+				Audio.SampQ.Next();
+			} while (af.Serial != Audio.AudioQ.Serial);
 
 			AVFrame* frame = af.AVFrame;
 			int dataSize = ffmpeg.av_samples_get_buffer_size(
@@ -519,10 +497,10 @@ namespace Nox.FFmpeg {
 			// Update audio clock (set_clock_at equivalent)
 			if (!double.IsNaN(AudioClock)) {
 				double callbackTime = (double)ffmpeg.av_gettime_relative() / 1_000_000.0;
-				AudClk.SetAt(AudioClock - (2 * AudioHwBufSize + (double)AudioWriteBufSize /
+				Audio.AudClk.SetAt(AudioClock - (2 * AudioHwBufSize + (double)AudioWriteBufSize /
 						(AudioTgtChannels * freq * ffmpeg.av_get_bytes_per_sample(AudioTgtFmt))),
 					AudioClockSerial, callbackTime);
-				ExtClk.SyncToSlave(AudClk);
+				ExtClk.SyncToSlave(Audio.AudClk);
 			}
 		}
 
@@ -571,32 +549,32 @@ namespace Nox.FFmpeg {
 
 					Audio.StreamPtr  = ic->streams[streamIndex];
 					Audio.StreamIndex = streamIndex;
-					AudDec      = new Decoder(avctx, AudioQ, () => _continueReadThread.Release());
+					Audio.AudDec     = new Decoder(avctx, Audio.AudioQ, () => _continueReadThread.Release());
 					if ((ic->iformat->flags & ffmpeg.AVFMT_NOTIMESTAMPS) != 0) {
-						AudDec.StartPts   = Audio.StreamPtr->start_time;
-						AudDec.StartPtsTb = Audio.StreamPtr->time_base;
+						Audio.AudDec.StartPts   = Audio.StreamPtr->start_time;
+						Audio.AudDec.StartPtsTb = Audio.StreamPtr->time_base;
 					}
-					AudioQ.Start();
-					AudDec.DecoderTid = new Thread(AudioThread) { IsBackground = true, Name = "ffplay_audio" };
-					AudDec.DecoderTid.Start();
+					Audio.AudioQ.Start();
+					Audio.AudDec.DecoderTid = new Thread(AudioThread) { IsBackground = true, Name = "ffplay_audio" };
+					Audio.AudDec.DecoderTid.Start();
 					return 0;
 
 				case AVMediaType.AVMEDIA_TYPE_VIDEO:
 					Video.StreamIndex = streamIndex;
 					Video.StreamPtr   = ic->streams[streamIndex];
-					VidDec      = new Decoder(avctx, VideoQ, () => _continueReadThread.Release());
-					VideoQ.Start();
-					VidDec.DecoderTid = new Thread(VideoThread) { IsBackground = true, Name = "ffplay_video" };
-					VidDec.DecoderTid.Start();
+					Video.VidDec      = new Decoder(avctx, Video.VideoQ, () => _continueReadThread.Release());
+					Video.VideoQ.Start();
+					Video.VidDec.DecoderTid = new Thread(VideoThread) { IsBackground = true, Name = "ffplay_video" };
+					Video.VidDec.DecoderTid.Start();
 					return 0;
 
 				case AVMediaType.AVMEDIA_TYPE_SUBTITLE:
 					Subtitle.StreamIndex = streamIndex;
 					Subtitle.StreamPtr   = ic->streams[streamIndex];
-					SubDec         = new Decoder(avctx, SubtitleQ, () => _continueReadThread.Release());
-					SubtitleQ.Start();
-					SubDec.DecoderTid = new Thread(SubtitleThread) { IsBackground = true, Name = "ffplay_subtitle" };
-					SubDec.DecoderTid.Start();
+					Subtitle.SubDec         = new Decoder(avctx, Subtitle.SubtitleQ, () => _continueReadThread.Release());
+					Subtitle.SubtitleQ.Start();
+					Subtitle.SubDec.DecoderTid = new Thread(SubtitleThread) { IsBackground = true, Name = "ffplay_subtitle" };
+					Subtitle.SubDec.DecoderTid.Start();
 					return 0;
 			}
 
@@ -621,9 +599,9 @@ namespace Nox.FFmpeg {
 
 			switch (par->codec_type) {
 				case AVMediaType.AVMEDIA_TYPE_AUDIO:
-					AbortDecoder(AudDec, SampQ);
-					AudDec.Dispose();
-					AudDec = null;
+					AbortDecoder(Audio.AudDec, Audio.SampQ);
+					Audio.AudDec.Dispose();
+					Audio.AudDec = null;
 					fixed (SwrContext** p = &SwrCtx)
 						ffmpeg.swr_free(p);
 					if (AudioBuf1 != null) {
@@ -636,17 +614,17 @@ namespace Nox.FFmpeg {
 					break;
 
 				case AVMediaType.AVMEDIA_TYPE_VIDEO:
-					AbortDecoder(VidDec, PictQ);
-					VidDec.Dispose();
-					VidDec      = null;
+					AbortDecoder(Video.VidDec, Video.PictQ);
+					Video.VidDec.Dispose();
+					Video.VidDec      = null;
 					Video.StreamIndex = -1;
 					Video.StreamPtr   = null;
 					break;
 
 				case AVMediaType.AVMEDIA_TYPE_SUBTITLE:
-					AbortDecoder(SubDec, SubpQ);
-					SubDec.Dispose();
-					SubDec         = null;
+					AbortDecoder(Subtitle.SubDec, Subtitle.SubpQ);
+					Subtitle.SubDec.Dispose();
+					Subtitle.SubDec         = null;
 					Subtitle.StreamIndex = -1;
 					Subtitle.StreamPtr   = null;
 					break;
@@ -665,25 +643,25 @@ namespace Nox.FFmpeg {
 			try {
 				int gotFrame;
 				do {
-					gotFrame = AudDec.DecodeFrame(frame, null);
+					gotFrame = Audio.AudDec.DecodeFrame(frame, null);
 					if (gotFrame < 0)
 						break;
 					if (gotFrame == 0)
 						continue; // EOF flush
 
-					Frame af = SampQ.PeekWritable();
+					Frame af = Audio.SampQ.PeekWritable();
 					if (af == null)
 						break;
 
 					AVRational tb = new AVRational { num = 1, den = frame->sample_rate };
 					af.Pts      = frame->pts == ffmpeg.AV_NOPTS_VALUE ? double.NaN : frame->pts * ffmpeg.av_q2d(tb);
 					af.Pos      = -1;
-					af.Serial   = AudDec.PktSerial;
+					af.Serial   = Audio.AudDec.PktSerial;
 					af.Duration = ffmpeg.av_q2d(new AVRational { num = frame->nb_samples, den = frame->sample_rate });
 					ffmpeg.av_frame_move_ref(af.AVFrame, frame);
-					SampQ.Push();
+					Audio.SampQ.Push();
 
-					if (AudioQ.Serial != AudDec.PktSerial)
+					if (Audio.AudioQ.Serial != Audio.AudDec.PktSerial)
 						break;
 				} while (gotFrame >= 0 || gotFrame == ffmpeg.AVERROR(ffmpeg.EAGAIN) || gotFrame == ffmpeg.AVERROR_EOF);
 			} finally {
@@ -715,9 +693,9 @@ namespace Nox.FFmpeg {
 						? ffmpeg.av_q2d(new AVRational { num = frameRate.den, den = frameRate.num }) : 0;
 					double pts = frame->pts == ffmpeg.AV_NOPTS_VALUE ? double.NaN : frame->pts * ffmpeg.av_q2d(tb);
 
-					ret = QueuePicture(frame, pts, duration, frame->pts, VidDec.PktSerial);
+					ret = QueuePicture(frame, pts, duration, frame->pts, Video.VidDec.PktSerial);
 					ffmpeg.av_frame_unref(frame);
-					if (VideoQ.Serial != VidDec.PktSerial)
+					if (Video.VideoQ.Serial != Video.VidDec.PktSerial)
 						break;
 					if (ret < 0)
 						break;
@@ -729,7 +707,7 @@ namespace Nox.FFmpeg {
 
 		// get_video_frame
 		private int GetVideoFrame(AVFrame* frame) {
-			int gotPicture = VidDec.DecodeFrame(frame, null);
+			int gotPicture = Video.VidDec.DecodeFrame(frame, null);
 			if (gotPicture < 0)
 				return -1;
 			if (gotPicture == 0)
@@ -746,8 +724,8 @@ namespace Nox.FFmpeg {
 				double diff = dpts - GetMasterClock();
 				if (!double.IsNaN(diff) && Math.Abs(diff) < Constants.AV_NOSYNC_THRESHOLD
 					&& diff < 0
-					&& VidDec.PktSerial == VidClk.Serial
-					&& VideoQ.NbPackets != 0) {
+					&& Video.VidDec.PktSerial == Video.VidClk.Serial
+					&& Video.VideoQ.NbPackets != 0) {
 					FrameDropsEarly++;
 					ffmpeg.av_frame_unref(frame);
 					return 0;
@@ -758,7 +736,7 @@ namespace Nox.FFmpeg {
 
 		// queue_picture
 		private int QueuePicture(AVFrame* srcFrame, double pts, double duration, long pos, int serial) {
-			Frame vp = PictQ.PeekWritable();
+			Frame vp = Video.PictQ.PeekWritable();
 			if (vp == null)
 				return -1;
 			vp.Sar      = srcFrame->sample_aspect_ratio;
@@ -771,28 +749,28 @@ namespace Nox.FFmpeg {
 			vp.Pos      = pos;
 			vp.Serial   = serial;
 			ffmpeg.av_frame_move_ref(vp.AVFrame, srcFrame);
-			PictQ.Push();
+			Video.PictQ.Push();
 			return 0;
 		}
 
 		// subtitle_thread (simplified — no rendering in this port)
 		private void SubtitleThread() {
 			for (;;) {
-				Frame sp = SubpQ.PeekWritable();
+				Frame sp = Subtitle.SubpQ.PeekWritable();
 				if (sp == null)
 					return;
 
 				AVSubtitle sub         = default;
-				int        gotSubtitle = SubDec.DecodeFrame(null, &sub);
+				int        gotSubtitle = Subtitle.SubDec.DecodeFrame(null, &sub);
 				if (gotSubtitle < 0)
 					break;
 
 				if (gotSubtitle != 0 && sub.format == 0) {
 					sp.Pts    = sub.pts != ffmpeg.AV_NOPTS_VALUE ? sub.pts / (double)ffmpeg.AV_TIME_BASE : 0;
-					sp.Serial = SubDec.PktSerial;
-					sp.Width  = (int)SubDec.Avctx->width;
-					sp.Height = (int)SubDec.Avctx->height;
-					SubpQ.Push();
+					sp.Serial = Subtitle.SubDec.PktSerial;
+					sp.Width  = (int)Subtitle.SubDec.Avctx->width;
+					sp.Height = (int)Subtitle.SubDec.Avctx->height;
+					Subtitle.SubpQ.Push();
 				} else if (gotSubtitle != 0)
 					ffmpeg.avsubtitle_free(&sub);
 			}
@@ -940,11 +918,11 @@ namespace Nox.FFmpeg {
 							Debug.LogError($"[FFplay] seek error: {Helper.AvErr(r2)}");
 						else {
 							if (Audio.StreamIndex >= 0)
-								AudioQ.Flush();
+								Audio.AudioQ.Flush();
 							if (Subtitle.StreamIndex >= 0)
-								SubtitleQ.Flush();
+								Subtitle.SubtitleQ.Flush();
 							if (Video.StreamIndex >= 0)
-								VideoQ.Flush();
+								Video.VideoQ.Flush();
 							ExtClk.Set((SeekFlags & ffmpeg.AVSEEK_FLAG_BYTE) != 0
 								? double.NaN : SeekPos / (double)ffmpeg.AV_TIME_BASE, 0);
 						}
@@ -959,8 +937,8 @@ namespace Nox.FFmpeg {
 						var videoSt = Video.StreamPtr;
 						if (videoSt != null && (videoSt->disposition & ffmpeg.AV_DISPOSITION_ATTACHED_PIC) != 0) {
 							if (ffmpeg.av_packet_ref(pkt, &videoSt->attached_pic) >= 0) {
-								VideoQ.Put(pkt);
-								VideoQ.PutNullPacket(pkt, Video.StreamIndex);
+								Video.VideoQ.Put(pkt);
+								Video.VideoQ.PutNullPacket(pkt, Video.StreamIndex);
 							}
 						}
 						QueueAttachmentsReq = false;
@@ -968,10 +946,10 @@ namespace Nox.FFmpeg {
 
 					// buffer full — wait
 					bool enoughPackets =
-						StreamHasEnoughPackets(Audio.StreamPtr, Audio.StreamIndex, AudioQ) &&
-						StreamHasEnoughPackets(Video.StreamPtr, Video.StreamIndex, VideoQ) &&
-						StreamHasEnoughPackets(Subtitle.StreamPtr, Subtitle.StreamIndex, SubtitleQ);
-					if (AudioQ.Size + VideoQ.Size + SubtitleQ.Size > Constants.MAX_QUEUE_SIZE || enoughPackets) {
+						StreamHasEnoughPackets(Audio.StreamPtr, Audio.StreamIndex, Audio.AudioQ) &&
+						StreamHasEnoughPackets(Video.StreamPtr, Video.StreamIndex, Video.VideoQ) &&
+						StreamHasEnoughPackets(Subtitle.StreamPtr, Subtitle.StreamIndex, Subtitle.SubtitleQ);
+					if (Audio.AudioQ.Size + Video.VideoQ.Size + Subtitle.SubtitleQ.Size > Constants.MAX_QUEUE_SIZE || enoughPackets) {
 						_continueReadThread.Wait(10);
 						continue;
 					}
@@ -979,8 +957,8 @@ namespace Nox.FFmpeg {
 					// auto-loop when finished (only when looping is enabled)
 					if (Loop
 						&& !Paused
-						&& (Audio.StreamPtr == null || (AudDec != null && AudDec.Finished == AudioQ.Serial && SampQ.NbRemaining() == 0))
-						&& (Video.StreamPtr == null || (VidDec != null && VidDec.Finished == VideoQ.Serial && PictQ.NbRemaining() == 0))) {
+						&& (Audio.StreamPtr == null || (Audio.AudDec != null && Audio.AudDec.Finished == Audio.AudioQ.Serial && Audio.SampQ.NbRemaining() == 0))
+						&& (Video.StreamPtr == null || (Video.VidDec != null && Video.VidDec.Finished == Video.VideoQ.Serial && Video.PictQ.NbRemaining() == 0))) {
 						StreamSeek(0, 0, false); // loop
 						continue;
 					}
@@ -989,11 +967,11 @@ namespace Nox.FFmpeg {
 					if (ret2 < 0) {
 						if ((ret2 == ffmpeg.AVERROR_EOF || ffmpeg.avio_feof(ic->pb) != 0) && !Eof) {
 							if (Video.StreamIndex >= 0)
-								VideoQ.PutNullPacket(pkt, Video.StreamIndex);
+								Video.VideoQ.PutNullPacket(pkt, Video.StreamIndex);
 							if (!hasSeparateAudio && Audio.StreamIndex >= 0)
-								AudioQ.PutNullPacket(pkt, Audio.StreamIndex);
+								Audio.AudioQ.PutNullPacket(pkt, Audio.StreamIndex);
 							if (Subtitle.StreamIndex >= 0)
-								SubtitleQ.PutNullPacket(pkt, Subtitle.StreamIndex);
+								Subtitle.SubtitleQ.PutNullPacket(pkt, Subtitle.StreamIndex);
 							Eof = true;
 						}
 						if (ic->pb != null && ic->pb->error != 0)
@@ -1009,12 +987,12 @@ namespace Nox.FFmpeg {
 						* ffmpeg.av_q2d(ic->streams[pkt->stream_index]->time_base) >= 0;
 
 					if (!hasSeparateAudio && pkt->stream_index == Audio.StreamIndex && inRange)
-						AudioQ.Put(pkt);
+						Audio.AudioQ.Put(pkt);
 					else if (pkt->stream_index == Video.StreamIndex && inRange
 						&& (Video.StreamPtr->disposition & ffmpeg.AV_DISPOSITION_ATTACHED_PIC) == 0)
-						VideoQ.Put(pkt);
+						Video.VideoQ.Put(pkt);
 					else if (pkt->stream_index == Subtitle.StreamIndex && inRange)
-						SubtitleQ.Put(pkt);
+						Subtitle.SubtitleQ.Put(pkt);
 					else
 						ffmpeg.av_packet_unref(pkt);
 				}
@@ -1027,7 +1005,7 @@ namespace Nox.FFmpeg {
 
 		// ─────────────────────────────────────────────────────────────────
 		// audio read thread — opens a separate audio-only input (e.g. YouTube
-		// DASH audio stream) and feeds AudioQ.
+		// DASH audio stream) and feeds Audio.AudioQ.
 		// ─────────────────────────────────────────────────────────────────
 		private void StartAudioReadThread() {
 			_audioReadTid = new Thread(AudioReadThread) { IsBackground = true, Name = "ffplay_read_audio" };
@@ -1085,12 +1063,12 @@ namespace Nox.FFmpeg {
 						if (r2 < 0)
 							Debug.LogError($"[FFplay] audio seek error: {Helper.AvErr(r2)}");
 						else
-							AudioQ.Flush();
+							Audio.AudioQ.Flush();
 						AudioSeekReq = false;
 					}
 
-					if (AudioQ.Size > Constants.MAX_QUEUE_SIZE
-						|| StreamHasEnoughPackets(Audio.StreamPtr, Audio.StreamIndex, AudioQ)) {
+					if (Audio.AudioQ.Size > Constants.MAX_QUEUE_SIZE
+						|| StreamHasEnoughPackets(Audio.StreamPtr, Audio.StreamIndex, Audio.AudioQ)) {
 						_continueReadThread.Wait(10);
 						continue;
 					}
@@ -1098,7 +1076,7 @@ namespace Nox.FFmpeg {
 					int ret2 = ffmpeg.av_read_frame(ic, pkt);
 					if (ret2 < 0) {
 						if (ret2 == ffmpeg.AVERROR_EOF || ffmpeg.avio_feof(ic->pb) != 0) {
-							AudioQ.PutNullPacket(pkt, Audio.StreamIndex);
+							Audio.AudioQ.PutNullPacket(pkt, Audio.StreamIndex);
 							_continueReadThread.Wait(10);
 							continue;
 						}
@@ -1109,7 +1087,7 @@ namespace Nox.FFmpeg {
 					}
 
 					if (pkt->stream_index == Audio.StreamIndex)
-						AudioQ.Put(pkt);
+						Audio.AudioQ.Put(pkt);
 					else
 						ffmpeg.av_packet_unref(pkt);
 				}
@@ -1150,12 +1128,12 @@ namespace Nox.FFmpeg {
 				ffmpeg.avformat_close_input(&ic2);
 				_icAudio = null;
 			}
-			VideoQ.Dispose();
-			AudioQ.Dispose();
-			SubtitleQ.Dispose();
-			PictQ.Dispose();
-			SampQ.Dispose();
-			SubpQ.Dispose();
+			Video.VideoQ.Dispose();
+			Audio.AudioQ.Dispose();
+			Subtitle.SubtitleQ.Dispose();
+			Video.PictQ.Dispose();
+			Audio.SampQ.Dispose();
+			Subtitle.SubpQ.Dispose();
 			_continueReadThread.Dispose();
 		}
 	}

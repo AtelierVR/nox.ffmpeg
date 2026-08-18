@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using Cysharp.Threading.Tasks;
 using FFmpeg.AutoGen;
@@ -74,9 +75,7 @@ namespace Nox.FFmpeg {
 			=> State is { Paused: true };
 		
 		public bool IsBuffering
-			=> State != null
-				&& ((State.Video.StreamIndex >= 0 && State.VideoQ.NbPackets < Constants.MIN_FRAMES / 4)
-					|| (State.Audio.StreamIndex >= 0 && State.AudioQ.NbPackets < Constants.MIN_FRAMES / 4));
+			=> State != null && !State.Handlers.All(h => h.HasEnoughPackets);
 
 		// ── IVideoPlayer ──────────────────────────────────────────────────
 		public UnityEvent<IVideoPlayer, Exception> OnError { get; } = new();
@@ -201,8 +200,7 @@ namespace Nox.FFmpeg {
 		}
 
 		private bool HasReachedEnd()
-			=> (State.Audio.StreamPtr == null || (State.AudDec != null && State.AudDec.Finished == State.AudioQ.Serial && State.SampQ.NbRemaining() == 0))
-				&& (State.Video.StreamPtr == null || (State.VidDec != null && State.VidDec.Finished == State.VideoQ.Serial && State.PictQ.NbRemaining() == 0));
+			=> State.Handlers.All(h => h.HasEnded);
 
 		// ── Public API ────────────────────────────────────────────────────
 		/// Open and start playback from a URL (file, HLS, RTMP, RTSP …).

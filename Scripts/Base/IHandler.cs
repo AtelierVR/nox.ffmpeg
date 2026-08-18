@@ -12,6 +12,12 @@ namespace Nox.FFmpeg.Base {
 		public int StreamIndex { get; set; } = -1;
 		public AVStream* StreamPtr { get; set; }
 
+		/// True when the stream has been decoded to the end and drained.
+		public abstract bool HasEnded { get; }
+
+		/// True when the demux queue for this stream has enough packets (not starving).
+		public abstract bool HasEnoughPackets { get; }
+
 		public abstract void Start();
 		public abstract void Stop();
 	}

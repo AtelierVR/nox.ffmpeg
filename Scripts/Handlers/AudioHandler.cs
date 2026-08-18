@@ -13,7 +13,7 @@ namespace Nox.FFmpeg.Handlers {
 	/// Feeds decoded PCM into a small ring buffer on a dedicated thread.
 	/// The main thread pulls from the ring via <see cref="Read"/> and writes it
 	/// into a non-stream AudioClip with SetData (see AudioSourceComponent).
-	public sealed class AudioHandler : IHandler {
+	public unsafe sealed class AudioHandler : IHandler {
 		public override StreamType Type 
 			=> StreamType.Audio;
 
@@ -28,6 +28,18 @@ namespace Nox.FFmpeg.Handlers {
 
 		public int Channels 
 			=> 2;
+
+		// ── FFmpeg demux/decode state (owned by this handler) ────────────
+		public PacketQueue AudioQ { get; } = new();
+		public FrameQueue  SampQ  { get; }
+		public Decoder     AudDec;
+		public Clock       AudClk { get; }
+
+		public override bool HasEnded
+			=> StreamPtr == null || (AudDec != null && AudDec.Finished == AudioQ.Serial && SampQ.NbRemaining() == 0);
+
+		public override bool HasEnoughPackets
+			=> StreamIndex < 0 || AudioQ.NbPackets >= Constants.MIN_FRAMES / 4;
 
 		/// Total sample-frames produced by the fill thread so far.
 		public int PcmWritePos => _writePos;
@@ -49,6 +61,8 @@ namespace Nox.FFmpeg.Handlers {
 			SampleRate = AudioSettings.outputSampleRate;
 			_ringFrames = Math.Max(SampleRate / 4, ChunkFrames * 4);  // ~250 ms ring
 			_ring       = new float[_ringFrames * Channels];
+			SampQ       = new FrameQueue(AudioQ, Constants.SAMPLE_QUEUE_SIZE, true);
+			AudClk      = new Clock(() => AudioQ.GetSerial());
 		}
 
 		public override void Start() {

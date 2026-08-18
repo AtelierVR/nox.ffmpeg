@@ -20,6 +20,18 @@ namespace Nox.FFmpeg.Handlers {
 		public Vector2Int Resolution { get; private set; } = Vector2Int.zero;
 		public UnityEvent<Vector2Int> OnResolution { get; } = new();
 
+		// ── FFmpeg demux/decode state (owned by this handler) ────────────
+		public PacketQueue VideoQ { get; } = new();
+		public FrameQueue  PictQ  { get; }
+		public Decoder     VidDec;
+		public Clock       VidClk { get; }
+
+		public override bool HasEnded
+			=> StreamPtr == null || (VidDec != null && VidDec.Finished == VideoQ.Serial && PictQ.NbRemaining() == 0);
+
+		public override bool HasEnoughPackets
+			=> StreamIndex < 0 || VideoQ.NbPackets >= Constants.MIN_FRAMES / 4;
+
 		private readonly Player player;
 
 		private Converter _converter;
@@ -30,6 +42,8 @@ namespace Nox.FFmpeg.Handlers {
 		public VideoHandler(Player p) {
 			player = p;
 			OnFrame.AddListener(frame => player.OnTexture.Invoke(player, frame));
+			PictQ = new FrameQueue(VideoQ, Constants.VIDEO_PICTURE_QUEUE_SIZE, true);
+			VidClk = new Clock(() => VideoQ.GetSerial());
 		}
 
 		public override void Start() {
