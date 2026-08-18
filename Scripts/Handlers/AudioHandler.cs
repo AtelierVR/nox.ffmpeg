@@ -17,6 +17,11 @@ namespace Nox.FFmpeg.Handlers {
 		public override StreamType Type 
 			=> StreamType.Audio;
 
+		/// Streaming AudioClip owned by this handler (output format from <see cref="SampleRate"/>/<see cref="Channels"/>).
+		public AudioClip Clip { get; private set; }
+
+		public UnityEvent<AudioClip> OnClip { get; } = new();
+
 		/// Cached on the main thread; AudioSettings.outputSampleRate can't be read
 		/// from the decoder thread.
 		public int SampleRate { get; }
@@ -26,8 +31,6 @@ namespace Nox.FFmpeg.Handlers {
 
 		/// Total sample-frames produced by the fill thread so far.
 		public int PcmWritePos => _writePos;
-		/// Streaming AudioClip owned by this handler (output format from <see cref="SampleRate"/>/<see cref="Channels"/>).
-		public AudioClip Clip { get; private set; }
 		public event Action<float[], int, int> OnSamples;
 
 		private readonly Player player;
@@ -69,6 +72,7 @@ namespace Nox.FFmpeg.Handlers {
 		public AudioClip CreateClip() {
 			DestroyClip();
 			Clip = AudioClip.Create("FFplay", SampleRate, Channels, SampleRate, false);
+			OnClip.Invoke(Clip);
 			return Clip;
 		}
 
@@ -86,7 +90,7 @@ namespace Nox.FFmpeg.Handlers {
 				int free = _ringFrames - (_writePos - _readPos);
 				if (free < ChunkFrames) { Thread.Sleep(1); continue; }
 
-				player.state.AudioCallback(chunk, Channels, SampleRate);
+				player.State.AudioCallback(chunk, Channels, SampleRate);
 				WriteChunk(chunk);
 				_writePos += ChunkFrames;
 				OnSamples?.Invoke(chunk, Channels, SampleRate);
@@ -117,13 +121,5 @@ namespace Nox.FFmpeg.Handlers {
 			_readPos += count;
 			return count;
 		}
-	}
-
-	/// Placeholder handler for subtitles.
-	internal sealed class SubtitleHandler : IHandler {
-		public override StreamType Type => StreamType.Subtitle;
-
-		public override void Start() => IsRunning = true;
-		public override void Stop()  => IsRunning = false;
 	}
 }

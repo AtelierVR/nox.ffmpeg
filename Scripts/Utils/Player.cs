@@ -15,21 +15,32 @@ using UnityEngine.Events;
 using IHandler = Nox.FFmpeg.Base.IHandler;
 
 namespace Nox.FFmpeg {
-	public unsafe class Player : MonoBehaviour, IVideoPlayer {
+	public unsafe class Player : MonoBehaviour, IVideoPlayer, IVideoPlayerTexture, IVideoPlayerDetails, IVideoPlayerResolution {
 
 		[Header("Playback")]
 		public string Url;
 		public bool AutoPlay = true;
 		public int AvSyncType = Constants.AV_SYNC_AUDIO_MASTER;
 
+		public string Title { get; internal set; } = null;
+		public string Subtitle { get; internal set; } = null;
+
 		// ── Output subscriptions ──────────────────────────────────────────
-		public UnityEvent<Texture2D> OnFrame = new();
+
 		/// Subscribe to receive raw float PCM for custom audio processing.
 		public event Action<float[], int, int> OnAudioSamples;
 
 		// ── Current frame ─────────────────────────────────────────────
-		public Texture2D Frame 
-			=> state?.GetHandler<VideoHandler>()?.Frame;
+
+		public Texture2D Texture 
+			=> State?.GetHandler<VideoHandler>()?.Frame;
+
+		public UnityEvent<IVideoPlayer, Texture2D> OnTexture { get; } = new();
+
+		public Vector2Int Resolution 
+			=> State?.GetHandler<VideoHandler>()?.Resolution ?? Vector2Int.zero;
+
+		public UnityEvent<IVideoPlayer, Vector2Int> OnResolution { get; } = new();
 
 		
 		// ── Audio output ─────────────────────────────────────────────────
@@ -38,34 +49,34 @@ namespace Nox.FFmpeg {
 
 		/// Streaming AudioClip backed by the decoded PCM stream (owned by AudioHandler).
 		public AudioClip Clip
-			=> state?.GetHandler<AudioHandler>()?.Clip;
+			=> State?.GetHandler<AudioHandler>()?.Clip;
 
 		/// Sample rate used for the streaming AudioClip.
 		public int AudioSampleRate 
-			=> state?.GetHandler<AudioHandler>()?.SampleRate ?? 0;
+			=> State?.GetHandler<AudioHandler>()?.SampleRate ?? 0;
 
 		/// Update the audio hardware buffer latency fed to the video clock (call from main thread).
 		public void SetAudioLatency(double seconds) { 
-			if (state != null) 
-				state.AudioHwBufSize = seconds; 
+			if (State != null) 
+				State.AudioHwBufSize = seconds; 
 		}
 		
 		/// Master clock in seconds (NaN when not playing).
 		public double MasterClock 
-			=> state?.GetMasterClock() 
+			=> State?.GetMasterClock() 
 				?? double.NaN;
 
 		// ── Public state ──────────────────────────────────────────────────
 		public bool IsPlaying
-			=> state is { Paused: false };
+			=> State is { Paused: false };
 		
 		public bool IsPaused
-			=> state is { Paused: true };
+			=> State is { Paused: true };
 		
 		public bool IsBuffering
-			=> state != null
-				&& ((state.Video.StreamIndex >= 0 && state.VideoQ.NbPackets < Constants.MIN_FRAMES / 4)
-					|| (state.Audio.StreamIndex >= 0 && state.AudioQ.NbPackets < Constants.MIN_FRAMES / 4));
+			=> State != null
+				&& ((State.Video.StreamIndex >= 0 && State.VideoQ.NbPackets < Constants.MIN_FRAMES / 4)
+					|| (State.Audio.StreamIndex >= 0 && State.AudioQ.NbPackets < Constants.MIN_FRAMES / 4));
 
 		// ── IVideoPlayer ──────────────────────────────────────────────────
 		public UnityEvent<IVideoPlayer, Exception> OnError { get; } = new();
@@ -82,11 +93,11 @@ namespace Nox.FFmpeg {
 		private bool  _loop;
 
 		public float Volume {
-			get => state == null ? _volume : state.AudioVolume / 128f;
+			get => State == null ? _volume : State.AudioVolume / 128f;
 			set {
 				_volume = Mathf.Clamp01(value);
-				if (state != null)
-					state.AudioVolume = (int)(_volume * 128);
+				if (State != null)
+					State.AudioVolume = (int)(_volume * 128);
 				OnVolume.Invoke(this, _volume);
 			}
 		}
@@ -98,9 +109,9 @@ namespace Nox.FFmpeg {
 
 		public double Duration {
 			get {
-				if (state == null || state.Ic == null)
+				if (State == null || State.Ic == null)
 					return double.NaN;
-				return state.Ic->duration / (double)ffmpeg.AV_TIME_BASE;
+				return State.Ic->duration / (double)ffmpeg.AV_TIME_BASE;
 			}
 		}
 
@@ -147,7 +158,10 @@ namespace Nox.FFmpeg {
 		}
 
 		// ── Private ───────────────────────────────────────────────────────
-		internal PlayerState state;
+
+		public PlayerState State;
+
+		public UnityEvent<PlayerState> OnStateChanged { get; } = new();
 
 		private double _refreshTime;
 
@@ -162,11 +176,11 @@ namespace Nox.FFmpeg {
 		}
 
 		private void Update() {
-			if (state == null)
+			if (State == null)
 				return;
 
 			// Drive video_refresh every frame; let it decide internally when to display
-			state.VideoRefresh(Constants.REFRESH_RATE);
+			State.VideoRefresh(Constants.REFRESH_RATE);
 		}
 
 		// ── Public API ────────────────────────────────────────────────────
@@ -179,11 +193,11 @@ namespace Nox.FFmpeg {
 				? $"[FFplay] Opening {videoUrl}"
 				: $"[FFplay] Opening video {videoUrl} + audio {audioUrl}");
 
-			state = new PlayerState();
-			state.AvSyncType = AvSyncType;
+			State = new PlayerState();
+			State.AvSyncType = AvSyncType;
 
 			// Estimate audio hw buffer latency (≈ Unity's AudioSource buffer)
-			state.AudioHwBufSize = 1.0 / Constants.AUDIO_MAX_CALLBACKS_PER_SEC * 2;
+			State.AudioHwBufSize = 1.0 / Constants.AUDIO_MAX_CALLBACKS_PER_SEC * 2;
 
 			// Build the streams (flux) and their typed handlers.
 			var streams  = new List<IStream>();
@@ -202,22 +216,24 @@ namespace Nox.FFmpeg {
 				new SubtitleHandler()
 			};
 
-			state.Streams  = streams.ToArray();
-			state.Handlers = handlers.ToArray();
+			State.Streams  = streams.ToArray();
+			State.Handlers = handlers.ToArray();
 
 			foreach (var handler in handlers) 
 				handler.Start();
 
-			state.TargetAudioFreq = audioHandler.SampleRate; // ensure SWR resamples to Unity's output rate
-			state.StartReadThread();
+			State.TargetAudioFreq = audioHandler.SampleRate; // ensure SWR resamples to Unity's output rate
+			State.StartReadThread();
 
 			// Bootstrap AudioHwBufSize from DSP config; refined dynamically by AudioSourceComponent
 			AudioSettings.GetDSPBufferSize(out int dspLen, out int dspCount);
-			state.AudioHwBufSize = (double)(dspLen * dspCount) / audioHandler.SampleRate;
+			State.AudioHwBufSize = (double)(dspLen * dspCount) / audioHandler.SampleRate;
 
 			// AudioHandler owns the clip; Player only surfaces it through OnClip.
 			OnClip.Invoke(audioHandler.CreateClip());
 			OnPlay.Invoke(this);
+
+			OnStateChanged.Invoke(State);
 		}
 
 		[ContextMenu("Play")]
@@ -227,46 +243,46 @@ namespace Nox.FFmpeg {
 		[ContextMenu("Stop")]
 		public void Close() {
 			// Handlers own their resources (AudioHandler owns and destroys its clip).
-			if (state != null)
-				foreach (var handler in state.Handlers)
+			if (State != null)
+				foreach (var handler in State.Handlers)
 					handler.Stop();
 
-			if (state == null) return;
-			var vs = state;
-			state = null;
+			if (State == null) return;
+			var vs = State;
+			State = null;
 			// Dispose on a background thread — ReadTid.Join() can block seconds on network streams
 			Task.Run(() => vs.Dispose());
 		}
 
 		[ContextMenu("Pause")]
 		public void Pause() {
-			if (state == null || state.Paused)
+			if (State == null || State.Paused)
 				return;
-			state.TogglePause();
+			State.TogglePause();
 			OnPause.Invoke(this);
 		}
 
 		[ContextMenu("Resume")]
 		public void Resume() {
-			if (state is not { Paused: true })
+			if (State is not { Paused: true })
 				return;
-			state.TogglePause();
+			State.TogglePause();
 			OnResume.Invoke(this);
 		}
 
 		public void Seek(double seconds) {
-			state?.StreamSeek((long)(seconds * ffmpeg.AV_TIME_BASE), 0, false);
+			State?.StreamSeek((long)(seconds * ffmpeg.AV_TIME_BASE), 0, false);
 			OnSeek.Invoke(this, seconds);
 		}
 
 		public void SeekRelative(double delta) {
-			if (state == null)
+			if (State == null)
 				return;
-			double pos = state.GetMasterClock();
+			double pos = State.GetMasterClock();
 			if (double.IsNaN(pos))
-				pos = (double)state.SeekPos / ffmpeg.AV_TIME_BASE;
+				pos = (double)State.SeekPos / ffmpeg.AV_TIME_BASE;
 			pos += delta;
-			state.StreamSeek((long)(pos * ffmpeg.AV_TIME_BASE), (long)(delta * ffmpeg.AV_TIME_BASE), false);
+			State.StreamSeek((long)(pos * ffmpeg.AV_TIME_BASE), (long)(delta * ffmpeg.AV_TIME_BASE), false);
 		}
 
 		private void OnDestroy() {
@@ -275,11 +291,11 @@ namespace Nox.FFmpeg {
 		}
 		
 		private void OnDisable()
-			=> state?.TogglePause();
+			=> State?.TogglePause();
 		
 		private void OnEnable() {
-			if (state is { Paused: true })
-				state.TogglePause();
+			if (State is { Paused: true })
+				State.TogglePause();
 		}
 	}
 }

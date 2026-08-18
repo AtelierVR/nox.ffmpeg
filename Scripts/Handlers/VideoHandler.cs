@@ -11,9 +11,14 @@ using UnityEngine.Events;
 namespace Nox.FFmpeg.Handlers {
 	/// Decodes video frames and converts them to a <see cref="Texture2D"/>.
 	public unsafe sealed class VideoHandler : IHandler {
-		public override StreamType Type => StreamType.Video;
+		public override StreamType Type 
+			=> StreamType.Video;
+
 		public Texture2D Frame { get; private set; }
 		public UnityEvent<Texture2D> OnFrame { get; } = new();
+
+		public Vector2Int Resolution { get; private set; } = Vector2Int.zero;
+		public UnityEvent<Vector2Int> OnResolution { get; } = new();
 
 		private readonly Player player;
 
@@ -24,17 +29,17 @@ namespace Nox.FFmpeg.Handlers {
 
 		public VideoHandler(Player p) {
 			player = p;
-			OnFrame.AddListener(frame => player.OnFrame.Invoke(frame));
+			OnFrame.AddListener(frame => player.OnTexture.Invoke(player, frame));
 		}
 
 		public override void Start() {
 			IsRunning = true;
-			player.state.OnVideoFrameReady = HandleFrame;
+			player.State.OnVideoFrameReady = HandleFrame;
 		}
 
 		public override void Stop() {
 			IsRunning = false;
-			player.state.OnVideoFrameReady = null;
+			player.State.OnVideoFrameReady = null;
 			_converter?.Dispose();
 			_converter = null;
 			if (Frame) {
@@ -78,6 +83,11 @@ namespace Nox.FFmpeg.Handlers {
 				if (Frame)
 					UnityEngine.Object.Destroy(Frame);
 				Frame = new Texture2D(w, h, TextureFormat.RGB24, false) { name = "FFplay" };
+				var res = new Vector2Int(w, h);
+				if (Resolution != res) {
+					Resolution = res;
+					OnResolution.Invoke(res);
+				}
 			}
 			Frame.LoadRawTextureData(buf);
 			Frame.Apply(false);

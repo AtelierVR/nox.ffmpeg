@@ -35,7 +35,7 @@ namespace Nox.FFmpeg.Components {
 
 		/// Current PCM write cursor in the ring buffer (sample-frames mod clip.samples).
 		public AudioHandler Audio 
-			=> Source.state.GetHandler<AudioHandler>();
+			=> Source.State.GetHandler<AudioHandler>();
 
 
 		// ── Lifecycle ──────────────────────────────────────────────────────
@@ -50,16 +50,20 @@ namespace Nox.FFmpeg.Components {
 		}
 
 		private void OnEnable() {
-			if (!Source) return;
+			if(Source.State != null)
+				HandleStateChanged(Source.State);
+			Source.OnStateChanged.AddListener(HandleStateChanged);
+		}
+
+		private void HandleStateChanged(PlayerState state) {
+			if (Audio == null) return;
 			Source.OnClip.AddListener(HandleClip);
-			// Apply current clip immediately if one is already playing
-			if (Source.Clip)
-				HandleClip(Source.Clip);
+			HandleClip(Audio.Clip);
 		}
 
 		private void OnDisable() {
-			if (Source)
-				Source.OnClip.RemoveListener(HandleClip);
+			Audio?.OnClip.RemoveListener(HandleClip);
+			Source.OnStateChanged.RemoveListener(HandleStateChanged);
 			foreach (var a in Targets)
 				if (a) a.Pause();
 		}
@@ -76,6 +80,12 @@ namespace Nox.FFmpeg.Components {
 		// ── Clip handler ──────────────────────────────────────────────────
 
 		private void HandleClip(AudioClip clip) {
+			if (!clip) {
+				_clip = null;
+				foreach (var a in Targets)
+					if (a) a.Stop();
+				return;
+			}
 			_clip = clip;
 			_writePos = 0;
 			_started = false;

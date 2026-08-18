@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using Nox.FFmpeg.Handlers;
 
 namespace Nox.FFmpeg.Components {
 
@@ -68,6 +69,12 @@ namespace Nox.FFmpeg.Components {
 		[Header("Targets")]
 		public VideoMeshTarget[] Targets = Array.Empty<VideoMeshTarget>();
 
+		// ── Utils ───────────────────────────────────────────────────────── 
+
+		/// Current video texture from the Player (null if none).
+		public VideoHandler Video 
+			=> Source.State?.GetHandler<VideoHandler>();
+
 		// ── Lifecycle ──────────────────────────────────────────────────────
 
 		private void Awake() {
@@ -75,13 +82,20 @@ namespace Nox.FFmpeg.Components {
 		}
 
 		private void OnEnable() {
-			if (!Source) return;
-			Source.OnFrame.AddListener(HandleFrame);
-            HandleFrame(Source.Frame); // Apply current frame immediately on enable
+			if(Source.State != null)
+				HandleStateChanged(Source.State);
+			Source.OnStateChanged.AddListener(HandleStateChanged);
+		}
+
+		private void HandleStateChanged(PlayerState state) {
+			if (Video == null) return;
+			Video.OnFrame.AddListener(HandleFrame);
+            HandleFrame(Video.Frame);
 		}
 
 		private void OnDisable() {
-			Source?.OnFrame.RemoveListener(HandleFrame);
+			Video?.OnFrame.RemoveListener(HandleFrame);
+			Source.OnStateChanged.RemoveListener(HandleStateChanged);
 		}
 
 		private void OnDestroy() {

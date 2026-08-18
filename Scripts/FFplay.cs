@@ -33,7 +33,7 @@ namespace Nox.FFmpeg {
 	// VideoState — the Model; mirrors VideoState in ffplay.c
 	// No SDL, no rendering: raises events consumed by FFplayPlayer (Controller)
 	// ─────────────────────────────────────────────────────────────────────────
-	internal unsafe class PlayerState : IDisposable {
+	public unsafe class PlayerState : IDisposable {
 		// ── streams (URLs live on the IStreams; indices/AVStream* on the handlers) ──
 		public AVFormatContext* Ic;
 		public bool Realtime;

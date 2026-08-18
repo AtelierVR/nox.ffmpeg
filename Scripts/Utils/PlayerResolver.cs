@@ -27,6 +27,8 @@ namespace Nox.FFmpeg.Utils {
 					return;
 				}
 
+				player.Title = resolves[0].Title;
+				player.Subtitle = resolves[0].Subtitle;
 				if (video != null)
 					player.Open(video.Url, audio?.Url);
 				else
