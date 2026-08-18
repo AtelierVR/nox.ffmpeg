@@ -69,9 +69,12 @@ namespace Nox.FFmpeg.Handlers {
 
 			// Target: stereo s16 at Unity's output rate. Always stereo so the
 			// interleaved PCM layout matches the AudioClip (created with 2 channels).
-			AudioTgtFreq       = TargetAudioFreq > 0 
-				? TargetAudioFreq 
-				: avctx->sample_rate;
+			// The clip is always created at SampleRate, so the resampler MUST target
+			// that rate (not the stream's native rate) or the audio plays at the wrong speed.
+			TargetAudioFreq = SampleRate;
+			AudioTgtFreq    = TargetAudioFreq > 0
+				? TargetAudioFreq
+				: SampleRate;
 
 			AudioTgtChannels   = 2;
 			AudioTgtFmt        = AVSampleFormat.AV_SAMPLE_FMT_S16;
@@ -89,9 +92,6 @@ namespace Nox.FFmpeg.Handlers {
 				Name = "ffplay_audio"
 			};
 			Decoder.DecoderTid.Start();
-
-			// ensure SWR resamples to Unity's output rate
-			TargetAudioFreq = SampleRate;
 		}
 
 		public override void Close() {
@@ -197,7 +197,7 @@ namespace Nox.FFmpeg.Handlers {
 			// Update audio clock (set_clock_at equivalent)
 			if (!double.IsNaN(AudioClock)) {
 				double callbackTime = (double)ffmpeg.av_gettime_relative() / 1_000_000.0;
-				Clock.SetAt(AudioClock - (2 * Latency + (double)AudioWriteBufSize /
+				Clock.SetAt(AudioClock - (Latency + (double)AudioWriteBufSize /
 						(AudioTgtChannels * freq * ffmpeg.av_get_bytes_per_sample(AudioTgtFmt))),
 					AudioClockSerial, callbackTime);
 				State.ExternalClock.SyncToSlave(Clock);

@@ -76,7 +76,12 @@ namespace Nox.FFmpeg.Handlers {
 
 			AVStream* videoSt   = StreamPtr;
 			AVRational tb        = videoSt->time_base;
-			AVRational frameRate = ffmpeg.av_guess_frame_rate(State.Context, videoSt, null);
+			// Prefer avg_frame_rate (accurate for CFR); av_guess_frame_rate can
+			// return r_frame_rate, which for VFR/PAL streams is a peak rate and
+			// would make playback run faster than real time.
+			AVRational frameRate = videoSt->avg_frame_rate;
+			if (frameRate.num == 0 || frameRate.den == 0)
+				frameRate = videoSt->r_frame_rate;
 
 			try {
 				for (;;) {
@@ -244,10 +249,6 @@ namespace Nox.FFmpeg.Handlers {
 
 		public Vector2Int Resolution { get; private set; } = Vector2Int.zero;
 		public UnityEvent<Vector2Int> OnResolution { get; } = new();
-
-		// ── FFmpeg demux/decode state (owned by this handler) ────────────
-		public PacketQueue Packets { get; } = new();
-		public FrameQueue  Frames  { get; }
 
 		public override bool HasEnded
 			=> StreamPtr == null || (Decoder != null && Decoder.Finished == Packets.Serial && Frames.NbRemaining() == 0);
