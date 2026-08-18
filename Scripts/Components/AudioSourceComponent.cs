@@ -159,9 +159,10 @@ namespace Nox.FFmpeg.Components {
 			}
 
 			// Feed the total decode→speaker buffering back to the A/V clock.
-			int decodedAhead = Audio.PcmWritePos - _writePos;   // frames still in the handler ring
+			// frames still in the handler ring
+			int decodedAhead = Audio.PcmWritePos - _writePos;
 			float totalLatency = (float)(decodedAhead + ahead) / sampleRate;
-			Source.SetAudioLatency(Mathf.Clamp(totalLatency, 0.01f, 1.5f));
+			Audio.Latency = Mathf.Clamp(totalLatency, 0.01f, 1.5f);
 		}
 
 		private void Fill(int clipLen, int channels, int want) {
