@@ -38,6 +38,7 @@ namespace Nox.FFmpeg {
 		public AVFormatContext* Ic;
 		public bool Realtime;
 		public bool Eof;
+		public bool Loop;
 
 		// ── clocks ────────────────────────────────────────────────────────
 		public Utils.Clock AudClk,
@@ -975,8 +976,9 @@ namespace Nox.FFmpeg {
 						continue;
 					}
 
-					// auto-loop when finished
-					if (!Paused
+					// auto-loop when finished (only when looping is enabled)
+					if (Loop
+						&& !Paused
 						&& (Audio.StreamPtr == null || (AudDec != null && AudDec.Finished == AudioQ.Serial && SampQ.NbRemaining() == 0))
 						&& (Video.StreamPtr == null || (VidDec != null && VidDec.Finished == VideoQ.Serial && PictQ.NbRemaining() == 0))) {
 						StreamSeek(0, 0, false); // loop

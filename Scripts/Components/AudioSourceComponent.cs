@@ -102,12 +102,23 @@ namespace Nox.FFmpeg.Components {
 		// ── Main-thread pump ──────────────────────────────────────────────
 
 		private void Update() {
-			if (!Source || !_clip || !Source.IsPlaying) return;
+			if (!Source || !_clip) return;
 
 			int clipLen    = _clip.samples;
 			int channels   = _clip.channels;
 			int sampleRate = _clip.frequency;
 			if (clipLen <= 0 || channels <= 0 || sampleRate <= 0) return;
+
+			// Only audible while actually playing: not paused, not buffering,
+			// and the player state is alive.
+			bool shouldPlay = Source.IsPlaying && !Source.IsBuffering;
+
+			if (!shouldPlay) {
+				foreach (var a in Targets)
+					if (a && a.isPlaying)
+						a.Pause();
+				return;
+			}
 
 			// Read cursor = furthest-along playing target (timeSamples wraps at clipLen).
 			int readPos = 0;

@@ -103,7 +103,17 @@ namespace Nox.FFmpeg {
 		}
 
 		public double Time {
-			get => MasterClock;
+			get {
+				var t = MasterClock;
+				if (double.IsNaN(t))
+					return t;
+				var d = Duration;
+				if (double.IsNaN(d) || d <= 0)
+					return t;
+				// The audio clock keeps extrapolating after EOF; clamp so the
+				// counter stops at the end instead of running past the duration.
+				return Math.Clamp(t, 0, d);
+			}
 			set => Seek(value);
 		}
 
@@ -129,6 +139,8 @@ namespace Nox.FFmpeg {
 			get => _loop;
 			set {
 				_loop = value;
+				if (State != null)
+					State.Loop = value;
 				OnLoop.Invoke(this, value);
 			}
 		}
@@ -179,9 +191,18 @@ namespace Nox.FFmpeg {
 			if (State == null)
 				return;
 
+			// When not looping, pause once playback reaches the end so the
+			// clock/counter stop instead of running past the duration.
+			if (!Loop && State.Eof && !State.Paused && HasReachedEnd())
+				Pause();
+
 			// Drive video_refresh every frame; let it decide internally when to display
 			State.VideoRefresh(Constants.REFRESH_RATE);
 		}
+
+		private bool HasReachedEnd()
+			=> (State.Audio.StreamPtr == null || (State.AudDec != null && State.AudDec.Finished == State.AudioQ.Serial && State.SampQ.NbRemaining() == 0))
+				&& (State.Video.StreamPtr == null || (State.VidDec != null && State.VidDec.Finished == State.VideoQ.Serial && State.PictQ.NbRemaining() == 0));
 
 		// ── Public API ────────────────────────────────────────────────────
 		/// Open and start playback from a URL (file, HLS, RTMP, RTSP …).
@@ -195,6 +216,7 @@ namespace Nox.FFmpeg {
 
 			State = new PlayerState();
 			State.AvSyncType = AvSyncType;
+			State.Loop       = Loop;
 
 			// Estimate audio hw buffer latency (≈ Unity's AudioSource buffer)
 			State.AudioHwBufSize = 1.0 / Constants.AUDIO_MAX_CALLBACKS_PER_SEC * 2;
@@ -266,6 +288,9 @@ namespace Nox.FFmpeg {
 		public void Resume() {
 			if (State is not { Paused: true })
 				return;
+			// Restart from the beginning when resuming after the end.
+			if (!Loop && State.Eof && HasReachedEnd())
+				State.StreamSeek(0, 0, false);
 			State.TogglePause();
 			OnResume.Invoke(this);
 		}
