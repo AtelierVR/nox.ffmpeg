@@ -29,11 +29,11 @@ namespace Nox.FFmpeg.Components {
 		[Tooltip("How the video is fitted onto the mesh: Cover crops, Fill stretches, Contain letterboxes.")]
 		public VideoMeshFit Fit = VideoMeshFit.Fill;
 
-		[Tooltip("Flip the video vertically (enable if the image appears upside down).")]
-		public bool FlipVertical = true;
+		[Tooltip("Flip the video vertically. VideoHandler already outputs upright frames, so this is off by default.")]
+		public bool FlipVertical = false;
 
 		[Tooltip("Flip the video horizontally (mirror left/right).")]
-		public bool FlipHorizontal;
+		public bool FlipHorizontal = false;
 
 		[Tooltip("When letterboxing (Contain), fill the empty bars with transparent pixels instead of black. Requires a transparent shader.")]
 		public bool TransparentBars = true;

@@ -10,6 +10,7 @@ namespace Nox.FFmpeg.Helpers {
 
 		private byte_ptrArray4 _dstData;
 		private int_array4     _dstLinesize;
+		private byte*          _dstBuffer;
 		private bool           _dstAllocated;
 
 		public Converter(
@@ -42,8 +43,10 @@ namespace Nox.FFmpeg.Helpers {
 		private void FreeBuffer() {
 			if (!_dstAllocated)
 				return;
-			fixed (void* p = &_dstData.ToArray()[0])
-				ffmpeg.av_freep(p);
+			if (_dstBuffer != null) {
+				ffmpeg.av_free(_dstBuffer);
+				_dstBuffer = null;
+			}
 			_dstAllocated = false;
 		}
 
@@ -56,6 +59,10 @@ namespace Nox.FFmpeg.Helpers {
 				ffmpeg.av_image_alloc(ref _dstData, ref _dstLinesize,
 					_destinationSize.Width, _destinationSize.Height,
 					_destinationPixelFormat, 32).ThrowExceptionIfError();
+
+				// Remember the base pointer for freeing and for the returned frame.
+				_dstBuffer = _dstData[0];
+
 				// Force a tightly packed stride so consumers can copy
 				// width*height*3 contiguous bytes.
 				_dstLinesize[0] = _destinationSize.Width * 3;
@@ -65,18 +72,30 @@ namespace Nox.FFmpeg.Helpers {
 				_dstAllocated = true;
 			}
 
+			// Vertical flip via FFmpeg: sws_scale supports negative destination
+			// strides. Pointing at the last row and stepping backwards writes the
+			// image bottom-to-top, matching the row order Texture2D expects.
+			var stride   = _destinationSize.Width * 3;
+			byte*[] dstData  = _dstData;
+			int[]    dstLines = _dstLinesize;
+			dstData[0]  = _dstBuffer + (_destinationSize.Height - 1) * stride;
+			dstLines[0] = -stride;
+
 			int ret = ffmpeg.sws_scale(_pConvertContext,
 				sourceFrame.data,
 				sourceFrame.linesize,
 				0,
 				sourceFrame.height,
-				_dstData,
-				_dstLinesize);
+				dstData,
+				dstLines);
 			if (ret < 0) {
 				ret.ThrowExceptionIfError();
 				throw new ApplicationException();
 			}
 
+			// _dstData/_dstLinesize still describe the base pointer with a positive
+			// stride, so the returned frame points at the flipped, tightly-packed
+			// buffer that can be copied contiguously.
 			var data = new byte_ptrArray8();
 			data.UpdateFrom(_dstData);
 			var linesize = new int_array8();

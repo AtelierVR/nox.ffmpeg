@@ -48,6 +48,7 @@ MonoBehaviour:
   Source: {fileID: 2688594718750464282}
   Targets:
   - {fileID: 1715456622131795692}
+  TargetLatency: 0.15
 --- !u!82 &1715456622131795692
 AudioSource:
   m_ObjectHideFlags: 0
@@ -194,9 +195,6 @@ MonoBehaviour:
   Url: 
   AutoPlay: 1
   AvSyncType: 0
-  OnFrame:
-    m_PersistentCalls:
-      m_Calls: []
   OnClip:
     m_PersistentCalls:
       m_Calls: []
@@ -332,6 +330,6 @@ MonoBehaviour:
     TextureProperty: _MainTex
     Fit: 2
     FlipVertical: 0
-    FlipHorizontal: 1
+    FlipHorizontal: 0
     TransparentBars: 1
     UseSharedMaterial: 0
