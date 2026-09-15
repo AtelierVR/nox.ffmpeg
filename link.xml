@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <linker>
 	<assembly fullname="avcodec-61" preserve="all" />
 	<assembly fullname="avdevice-61" preserve="all" />
