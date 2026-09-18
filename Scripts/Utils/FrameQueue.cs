@@ -98,6 +98,20 @@ namespace Nox.FFmpeg.Utils {
 				_cond.Release();
 		}
 
+		// frame_queue_flush — drop every queued frame (used when the stream of a
+		// handler is replaced, e.g. when another track is selected).
+		public void Flush() {
+			lock (_lock) {
+				for (int i = 0; i < _queue.Length; i++)
+					_queue[i].Unref();
+				_rindex      = 0;
+				_windex      = 0;
+				_rindexShown = 0;
+				_size        = 0;
+			}
+			Signal();
+		}
+
 		public void Dispose() {
 			foreach (var f in _queue)
 				f.Free();

@@ -1,6 +1,7 @@
 using System;
 using FFmpeg.AutoGen;
 using Nox.FFmpeg.Utils;
+using ITrack = Nox.VideoPlayer.ITrack;
 
 namespace Nox.FFmpeg.Base {
 	/// Base class for typed processors that manage the streams of their <see cref="Type"/>.
@@ -26,6 +27,25 @@ namespace Nox.FFmpeg.Base {
 		/// FFmpeg stream index selected by the demuxer (-1 until opened).
 		public int StreamIndex { get; set; } = -1;
 		public AVStream* StreamPtr { get; set; }
+
+		/// <summary>
+		/// Container that owns <see cref="StreamPtr"/>: the main input, or the separate
+		/// audio input when the audio flux has its own URL. Null until a stream is opened.
+		/// </summary>
+		public AVFormatContext* Context { get; set; }
+
+		/// <summary>
+		/// Streams of this handler's media type available in <see cref="Context"/>, and the
+		/// one currently decoded.
+		/// </summary>
+		public ITrack Track
+			=> _track ??= new Track(this);
+
+		/// <summary>Refresh the track list and raise its events (called every frame).</summary>
+		internal void PollTrack()
+			=> (_track ??= new Track(this)).Poll();
+
+		private Track _track;
 
 		// ── FFmpeg demux/decode state (owned by this handler) ────────────
 		public PacketQueue Packets { get; protected set; } = new();

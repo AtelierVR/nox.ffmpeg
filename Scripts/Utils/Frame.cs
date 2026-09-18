@@ -19,8 +19,11 @@ namespace Nox.FFmpeg.Utils {
 		public Frame()
 			=> AVFrame = ffmpeg.av_frame_alloc();
 
-		public void Unref()
-			=> ffmpeg.av_frame_unref(AVFrame);
+		public void Unref() {
+			if (AVFrame == null)
+				return;
+			ffmpeg.av_frame_unref(AVFrame);
+		}
 
 		public void Free() {
 			var f = AVFrame;
