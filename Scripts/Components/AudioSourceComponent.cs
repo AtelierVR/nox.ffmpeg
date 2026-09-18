@@ -1,6 +1,7 @@
 using System;
 using UnityEngine;
 using Nox.FFmpeg.Handlers;
+using Nox.VideoPlayer;
 
 namespace Nox.FFmpeg.Components {
 
@@ -35,7 +36,7 @@ namespace Nox.FFmpeg.Components {
 
 		/// Current PCM write cursor in the ring buffer (sample-frames mod clip.samples).
 		public AudioHandler Audio 
-			=> Source.State.GetHandler<AudioHandler>();
+			=> Source.InternalState.GetHandler<AudioHandler>();
 
 
 		// ── Lifecycle ──────────────────────────────────────────────────────
@@ -50,19 +51,19 @@ namespace Nox.FFmpeg.Components {
 		}
 
 		private void OnEnable() {
-			if(Source.State != null)
-				HandleStateChanged(Source.State);
+			if(Source.InternalState != null)
+				HandleStateChanged(Source.InternalState);
 			Source.OnStateChanged.AddListener(HandleStateChanged);
 		}
 
 		private void HandleStateChanged(PlayerState state) {
 			if (Audio == null) return;
 			Source.OnClip.AddListener(HandleClip);
-			HandleClip(Audio.Clip);
+			HandleClip(Source, Audio.Clip);
 		}
 
 		private void OnDisable() {
-			Audio?.OnClip.RemoveListener(HandleClip);
+			Source.OnClip.RemoveListener(HandleClip);
 			Source.OnStateChanged.RemoveListener(HandleStateChanged);
 			foreach (var a in Targets)
 				if (a) a.Pause();
@@ -79,7 +80,7 @@ namespace Nox.FFmpeg.Components {
 
 		// ── Clip handler ──────────────────────────────────────────────────
 
-		private void HandleClip(AudioClip clip) {
+		private void HandleClip(IVideoPlayer player, AudioClip clip) {
 			if (!clip) {
 				_clip = null;
 				foreach (var a in Targets)

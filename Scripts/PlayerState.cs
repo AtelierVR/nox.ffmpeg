@@ -25,6 +25,8 @@ using UnityEngine;
 using Helper = Nox.FFmpeg.Helpers.Helper;
 using System.Linq;
 using UnityEngine.Events;
+using LogType = Nox.CCK.Utils.LogType;
+using IVideoPlayer = Nox.VideoPlayer.IVideoPlayer;
 
 namespace Nox.FFmpeg {
 	
@@ -65,6 +67,22 @@ namespace Nox.FFmpeg {
 		private AVFormatContext* _icAudio;
 
 		// ── Controller callbacks (Unity output) ───────────────────────────
+		/// <summary>
+		/// The player driving this state. Used as the sender of the track events
+		/// exposed by the handlers (<c>IHandler.Track</c>).
+		/// </summary>
+		public IVideoPlayer Player { get; set; }
+
+		/// <summary>
+		/// Invoked on the main thread (from <see cref="Update"/>) when a stream has been
+		/// opened or replaced by the read thread, so the controller can notify its
+		/// listeners (<see cref="Player.OnStream"/>) at a safe time.
+		/// </summary>
+		public UnityEvent OnStreamChanged = new();
+
+		/// Set from the read thread by <see cref="OpenStream"/>.
+		private volatile bool _streamChanged;
+
 		/// Called from VideoState (Model) when a video frame is ready.
 		/// The consumer (Controller) converts it to Texture2D on the main thread.
 		/// Called when a block of float PCM (stereo, target sample rate) is ready.
@@ -93,6 +111,13 @@ namespace Nox.FFmpeg {
 		public IStream AudioUrl 
 			=> GetStreamUrl(StreamType.Audio);
 
+		/// <summary>
+		/// Context of the separate audio-only input, or <c>null</c> when the audio
+		/// comes from <see cref="Context"/> (the main input).
+		/// </summary>
+		public AVFormatContext* AudioContext 
+			=> _icAudio;
+
 		private IStream GetStreamUrl(StreamType type) {
 			for (int i = 0; i < Streams.Length; i++)
 				if ((Streams[i].Type & type) != 0 && !string.IsNullOrEmpty(Streams[i].Url))
@@ -111,6 +136,18 @@ namespace Nox.FFmpeg {
 			// clock/counter stop instead of running past the duration.
 			if (!Loop && Eof && !Paused && HasReachedEnd)
 				OnEndReached.Invoke();
+
+			// Keep the handlers' track lists in sync with their container: the read
+			// thread fills it asynchronously.
+			foreach (var handler in Handlers)
+				handler.PollTrack();
+
+			// A stream was opened/replaced by the read thread: tell the controller now
+			// that we are on the main thread.
+			if (_streamChanged) {
+				_streamChanged = false;
+				OnStreamChanged.Invoke();
+			}
 
 			// Drive video_refresh every frame; let it decide internally when to display
 			Video.VideoRefresh(Constants.REFRESH_RATE);
@@ -141,8 +178,13 @@ namespace Nox.FFmpeg {
 		public bool HasReachedEnd
 			=> Handlers.All(h => h.HasEnded);
 
-		// check_external_clock_speed
-		public void CheckExternalClockSpeed() {
+        public readonly UnityEvent<LogType, string> OnMessage = new();
+
+		private void Log(LogType type, string message) 
+			=> OnMessage.Invoke(type, message);
+		
+        // check_external_clock_speed
+        public void CheckExternalClockSpeed() {
 			if ((Video.StreamIndex >= 0 && Video.Packets.NbPackets <= Constants.EXTERNAL_CLOCK_MIN_FRAMES) ||
 				(Audio.StreamIndex >= 0 && Audio.Packets.NbPackets <= Constants.EXTERNAL_CLOCK_MIN_FRAMES))
 				ExternalClock.SetSpeed(Math.Max(Constants.EXTERNAL_CLOCK_SPEED_MIN,
@@ -233,7 +275,9 @@ namespace Nox.FFmpeg {
 			AVMediaType codecType = avctx->codec_type;
 			foreach (var h in Handlers)
 				if (Array.Exists(h.MediaTypes, t => t == codecType)) {
+					h.Context = ic; // the container owning this stream (see IHandler.Track)
 					h.Open(index, ic, avctx);
+					_streamChanged = true; // notified on the main thread by Update()
 					return 0;
 				}
 
@@ -309,7 +353,7 @@ namespace Nox.FFmpeg {
 
 				var videoUrl = VideoUrl ?? (Streams.Length > 0 ? Streams[0] : null);
 				if (videoUrl == null || string.IsNullOrEmpty(videoUrl.Url)) {
-					Debug.LogError("[FFplay] No video URL to open.");
+					Log(LogType.Error, "No video URL to open.");
 					SignalQuit();
 					return;
 				}
@@ -321,7 +365,7 @@ namespace Nox.FFmpeg {
 				int err = ffmpeg.avformat_open_input(&ic, videoUrl.Url, null, &opts);
 				ffmpeg.av_dict_free(&opts);
 				if (err < 0) {
-					Debug.LogError($"[FFplay] Cannot open {videoUrl.Url}: {Helper.ErrorToString(err)}");
+					Log(LogType.Error, $"Cannot open {videoUrl.Url}: {Helper.ErrorToString(err)}");
 					self.Free();
 					SignalQuit();
 					return;
@@ -334,7 +378,7 @@ namespace Nox.FFmpeg {
 
 				err = ffmpeg.avformat_find_stream_info(ic, null);
 				if (err < 0)
-					Debug.LogWarning($"[FFplay] {videoUrl}: could not find codec parameters");
+					Log(LogType.Warning, $"{videoUrl}: could not find codec parameters");
 
 				MaxFrameDuration = (ic->iformat->flags & ffmpeg.AVFMT_TS_DISCONT) != 0 ? 10.0 : 3600.0;
 				Realtime         = IsRealtime(ic);
@@ -370,7 +414,7 @@ namespace Nox.FFmpeg {
 					StartAudioReadThread();
 
 				if (Video.StreamIndex < 0 && Audio.StreamIndex < 0) {
-					Debug.LogError($"[FFplay] Failed to open streams in {videoUrl}");
+					Log(LogType.Error, $"Failed to open streams in {videoUrl}");
 					SignalQuit();
 					return;
 				}
@@ -395,7 +439,7 @@ namespace Nox.FFmpeg {
 						long seekMax = SeekRel < 0 ? SeekPos - SeekRel - 2 : long.MaxValue;
 						int  r2      = ffmpeg.avformat_seek_file(ic, -1, seekMin, SeekPos, seekMax, SeekFlags);
 						if (r2 < 0)
-							Debug.LogError($"[FFplay] seek error: {Helper.ErrorToString(r2)}");
+							Log(LogType.Error, $"seek error: {Helper.ErrorToString(r2)}");
 						else {
 							if (Audio.StreamIndex >= 0)
 								Audio.Packets.Flush();
@@ -516,7 +560,7 @@ namespace Nox.FFmpeg {
 				int err = ffmpeg.avformat_open_input(&ic, AudioUrl.Url, null, &opts);
 				ffmpeg.av_dict_free(&opts);
 				if (err < 0) {
-					Debug.LogError($"[FFplay] Cannot open audio {AudioUrl}: {Helper.ErrorToString(err)}");
+					Log(LogType.Error, $"Cannot open audio {AudioUrl}: {Helper.ErrorToString(err)}");
 					self.Free();
 					return;
 				}
@@ -525,14 +569,14 @@ namespace Nox.FFmpeg {
 
 				err = ffmpeg.avformat_find_stream_info(ic, null);
 				if (err < 0)
-					Debug.LogWarning($"[FFplay] {AudioUrl}: could not find codec parameters");
+					Log(LogType.Warning, $"{AudioUrl}: could not find codec parameters");
 
 				int audioIndex = ffmpeg.av_find_best_stream(ic, AVMediaType.AVMEDIA_TYPE_AUDIO, -1, -1, null, 0);
 				if (audioIndex >= 0)
 					OpenStream(audioIndex, ic);
 
 				if (Audio.StreamIndex < 0) {
-					Debug.LogError($"[FFplay] Failed to open audio stream in {AudioUrl}");
+					Log(LogType.Error, $"Failed to open audio stream in {AudioUrl}");
 					return;
 				}
 
@@ -543,7 +587,7 @@ namespace Nox.FFmpeg {
 					if (AudioSeekReq) {
 						int r2 = ffmpeg.avformat_seek_file(ic, -1, long.MinValue, SeekPos, SeekPos, 0);
 						if (r2 < 0)
-							Debug.LogError($"[FFplay] audio seek error: {Helper.ErrorToString(r2)}");
+							Log(LogType.Error, $"audio seek error: {Helper.ErrorToString(r2)}");
 						else
 							Audio.Packets.Flush();
 						AudioSeekReq = false;

@@ -189,15 +189,12 @@ MonoBehaviour:
   m_GameObject: {fileID: 1356785479812002052}
   m_Enabled: 1
   m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 682ccb875f7849c7a3f11d79215f27b3, type: 3}
+  m_Script: {fileID: 11500000, guid: 3e52a2f7a3d94c5459e2324cd4ec2591, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Nox.FFmpeg::Nox.FFmpeg.Utils.Player
   Url: 
   AutoPlay: 1
   AvSyncType: 0
-  OnClip:
-    m_PersistentCalls:
-      m_Calls: []
 --- !u!1 &8276672583562916668
 GameObject:
   m_ObjectHideFlags: 0
@@ -209,7 +206,6 @@ GameObject:
   - component: {fileID: 3069952236270153995}
   - component: {fileID: 4587412766299633089}
   - component: {fileID: 7660225869079733948}
-  - component: {fileID: 5766256811025020024}
   - component: {fileID: 6247754492963062647}
   m_Layer: 0
   m_Name: Video
@@ -226,7 +222,7 @@ Transform:
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 8276672583562916668}
   serializedVersion: 2
-  m_LocalRotation: {x: -0.7071068, y: 0, z: 0, w: 0.7071068}
+  m_LocalRotation: {x: 0, y: -0.7071068, z: 0.7071068, w: 0}
   m_LocalPosition: {x: 0, y: 0, z: 0}
   m_LocalScale: {x: 0.5, y: 0.5, z: 0.28125}
   m_ConstrainProportionsScale: 0
@@ -290,27 +286,6 @@ MeshRenderer:
   m_SortingOrder: 0
   m_MaskInteraction: 0
   m_AdditionalVertexStreams: {fileID: 0}
---- !u!65 &5766256811025020024
-BoxCollider:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 8276672583562916668}
-  m_Material: {fileID: 0}
-  m_IncludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_ExcludeLayers:
-    serializedVersion: 2
-    m_Bits: 0
-  m_LayerOverridePriority: 0
-  m_IsTrigger: 0
-  m_ProvidesContacts: 0
-  m_Enabled: 1
-  serializedVersion: 3
-  m_Size: {x: 1, y: 1, z: 1}
-  m_Center: {x: 0, y: 0, z: 0}
 --- !u!114 &6247754492963062647
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -329,7 +304,7 @@ MonoBehaviour:
     MaterialIndex: 0
     TextureProperty: _MainTex
     Fit: 2
-    FlipVertical: 1
-    FlipHorizontal: 1
+    FlipVertical: 0
+    FlipHorizontal: 0
     TransparentBars: 1
     UseSharedMaterial: 0

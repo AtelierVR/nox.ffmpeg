@@ -73,7 +73,7 @@ namespace Nox.FFmpeg.Components {
 
 		/// Current video texture from the Player (null if none).
 		public VideoHandler Video 
-			=> Source.State?.GetHandler<VideoHandler>();
+			=> Source.InternalState?.GetHandler<VideoHandler>();
 
 		// ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -82,8 +82,8 @@ namespace Nox.FFmpeg.Components {
 		}
 
 		private void OnEnable() {
-			if(Source.State != null)
-				HandleStateChanged(Source.State);
+			if(Source.InternalState != null)
+				HandleStateChanged(Source.InternalState);
 			Source.OnStateChanged.AddListener(HandleStateChanged);
 		}
 
