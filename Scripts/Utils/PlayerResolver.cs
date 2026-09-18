@@ -6,6 +6,7 @@ using Nox.CCK.VideoPlayer;
 using Nox.FFmpeg.Base;
 using Nox.VideoPlayer;
 using UnityEngine;
+using LogType = Nox.CCK.Utils.LogType;
 
 namespace Nox.FFmpeg.Utils {
 	/// <summary>
@@ -14,23 +15,26 @@ namespace Nox.FFmpeg.Utils {
 	/// <c>await</c> cannot be used directly inside it.
 	/// </summary>
 	internal static class PlayerResolver {
-		public static async UniTask ResolveAndOpenAsync(Player player, IFetchOptions options) {
+		public static async UniTask ResolveAndOpenAsync(this Player player, IFetchOptions options) {
 			try {
 				var results  = await VideoPlayerResolver.Resolve(player, options);
 				var resolves = results.SelectMany(e => e.Data).ToArray();
 				if (resolves.Length == 0) {
-					player.FireError("No data found for query");
+					player.Log(LogType.Error, "No data found for query");
 					return;
 				}
 
 				var (video, audio) = resolves[0].FindQuality();
 				if (video == null && audio == null) {
-					player.FireError("No compatible stream found");
+					player.Log(LogType.Error, "No compatible stream found");
 					return;
 				}
 
-				player.Title = resolves[0].Title;
-				player.Subtitle = resolves[0].Subtitle;
+				player.SetMetadata(
+					resolves[0].Title,
+					resolves[0].Subtitle,
+					await FetchThumbnailAsync(resolves[0].Thumbnails)
+				);
 
 				var flux = new List<Flux>();
 
@@ -46,14 +50,37 @@ namespace Nox.FFmpeg.Utils {
 					flux.Add(new Flux(StreamType.Audio, audio.Url, audio.Headers));
 
 				if (flux.Count == 0) {
-					player.FireError("No compatible stream found");
+					player.Log(LogType.Error, "No compatible stream found");
 					return;
 				}
 
 				player.Open(flux.ToArray());
 			} catch (Exception e) {
-				player.FireError(e.Message);
+				player.Log(LogType.Exception, e.Message);
 				Debug.LogException(e);
+			}
+		}
+
+		/// <summary>
+		/// Fetch the largest thumbnail offered by the resolver, or <c>null</c> when the
+		/// source has none.
+		/// </summary>
+		private static async UniTask<Texture2D> FetchThumbnailAsync(IThumbnail[] thumbnails) {
+			if (thumbnails == null || thumbnails.Length == 0)
+				return null;
+
+			var best = thumbnails
+				.Where(t => t != null)
+				.OrderByDescending(t => (long)t.Resolution.x * t.Resolution.y)
+				.FirstOrDefault();
+			if (best == null)
+				return null;
+
+			try {
+				return await best.Fetch();
+			} catch (Exception e) {
+				Debug.LogException(e);
+				return null;
 			}
 		}
 	}
