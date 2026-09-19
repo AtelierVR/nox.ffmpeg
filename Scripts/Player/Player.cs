@@ -6,6 +6,7 @@ using Nox.FFmpeg.Utils;
 using Nox.VideoPlayer;
 using UnityEngine;
 using UnityEngine.Events;
+using Cysharp.Threading.Tasks;
 using LogType = Nox.CCK.Utils.LogType;
 using Logger = Nox.CCK.Utils.Logger;
 
@@ -70,8 +71,10 @@ namespace Nox.FFmpeg {
 		}
 
 		internal void Log(LogType type, string message) {
-			Logger.Print(type, message, this, name);
-			OnMessage.Invoke(this, type, message);
+			UniTask.Post(() => {
+				Logger.Print(type, message, this, name);
+				OnMessage.Invoke(this, type, message);
+			});
 		}
 	}
 }
