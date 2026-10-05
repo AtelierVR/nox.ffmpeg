@@ -13,6 +13,7 @@ using UnityEngine;
 using UnityEngine.Events;
 using IHandler = Nox.FFmpeg.Base.IHandler;
 using LogType = Nox.CCK.Utils.LogType;
+using Logger = Nox.CCK.Utils.Logger;
 
 namespace Nox.FFmpeg {
 	public unsafe partial class Player {
@@ -80,15 +81,15 @@ namespace Nox.FFmpeg {
 		public void Open(params Flux[] flux) {
 			Close();
 			if (flux.Length == 0) {
-				Debug.LogWarning($"[FFplay] No flux.");
+				Logger.LogWarning($"No flux.", this, nameof(Player));
 				return;
 			}
 			foreach (var f in flux)
 				if (string.IsNullOrEmpty(f.Url)) {
-					Debug.LogWarning($"[FFplay] Flux {f.Type} is empty.");
+					Logger.LogWarning($"Flux {f.Type} is empty.", this, nameof(Player));
 					return;
 				}
-			Debug.Log($"[FFplay] Opening {string.Join(", ", flux.Select(e => e.Url))}");
+			Logger.Log($"Opening {string.Join(", ", flux.Select(e => e.Url))}", this, nameof(Player));
 
 			InternalState = new PlayerState {
 				AvSyncType = AvSyncType,
