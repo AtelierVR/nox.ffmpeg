@@ -22,6 +22,13 @@
       "website": "https://hactazia.fr/"
     }
   ],
+  "relations": [
+    {
+      "id": "videoplayer",
+      "type": "depends",
+      "register": "git+https://github.com/AtelierVR/nox.videoplayer.git"
+    }
+  ],
   "entrypoints": {
     "main": [
       {
