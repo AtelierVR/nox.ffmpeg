@@ -29,6 +29,8 @@ namespace Nox.FFmpeg.Components {
 		private int _writePos;   // sample-frames written into the clip (monotonic)
 		private bool _started;
 		private float[] _scratch;
+		private float[] _fill;       // reused: SetData needs an array of exactly the written length
+		private float[] _fillTail;   // idem for the part wrapping around the clip
 
 		private const int FillChunkFrames = 4096;
 
@@ -91,6 +93,8 @@ namespace Nox.FFmpeg.Components {
 			_writePos = 0;
 			_started = false;
 			_scratch = null;
+			_fill = null;
+			_fillTail = null;
 			foreach (var a in Targets) {
 				if (!a) continue;
 				a.playOnAwake = false;
@@ -180,7 +184,9 @@ namespace Nox.FFmpeg.Components {
 			int frameIndex = _writePos % clipLen;
 			int first = Mathf.Min(got, clipLen - frameIndex);
 
-			var data = new float[first * channels];
+			// SetData writes the whole array, so the buffers have the exact size of what they hold; they are
+			// kept from frame to frame instead of being allocated here (tens of KB of garbage per frame).
+			var data = Exact(ref _fill, first * channels);
 			Array.Copy(_scratch, 0, data, 0, data.Length);
 			// SetData's offsetSamples is a per-channel sample (frame) index, not
 			// an interleaved float index — for stereo we must NOT multiply by channels.
@@ -188,12 +194,20 @@ namespace Nox.FFmpeg.Components {
 
 			if (first < got) {
 				int rest = got - first;
-				var data2 = new float[rest * channels];
+				var data2 = Exact(ref _fillTail, rest * channels);
 				Array.Copy(_scratch, first * channels, data2, 0, data2.Length);
 				_clip.SetData(data2, 0);
 			}
 
 			_writePos += got;
+		}
+
+		/// <summary>Buffer of exactly <paramref name="length"/> floats, reused as long as the length does not change.</summary>
+		private static float[] Exact(ref float[] buffer, int length) {
+			if (buffer == null || buffer.Length != length)
+				buffer = new float[length];
+
+			return buffer;
 		}
 	}
 }
