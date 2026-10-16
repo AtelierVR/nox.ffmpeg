@@ -24,16 +24,44 @@ namespace Nox.FFmpeg.Utils {
 					return;
 				}
 
-				var (video, audio) = resolves[0].FindQuality();
+				await player.OpenResolveAsync(resolves[0]);
+			} catch (Exception e) {
+				player.Log(LogType.Exception, e.Message);
+				Debug.LogException(e);
+			}
+		}
+
+		/// <summary>
+		/// Open an already resolved media at the best compatible quality: refresh the
+		/// metadata (title/subtitle/thumbnail) then open the matching flux. Used both
+		/// after a resolve and when the user picks a result in the search page.
+		/// </summary>
+		public static async UniTask OpenResolveAsync(this Player player, IResolve resolve) {
+			try {
+				if (resolve == null) {
+					player.Log(LogType.Error, "No media to open");
+					return;
+				}
+
+				var (video, audio) = resolve.FindQuality();
 				if (video == null && audio == null) {
+					// A "flat" search entry has no format: re-resolve its page url through the
+					// handlers so the full extraction happens (the guard stops a re-entrance if
+					// that url resolves to the very same, format-less, entry).
+					if (!string.IsNullOrEmpty(resolve.Url) && !string.Equals(resolve.Url, player.Url, StringComparison.Ordinal)) {
+						player.Log(LogType.Log, $"Resolving {resolve.Url}");
+						player.Play(resolve.Url);
+						return;
+					}
+
 					player.Log(LogType.Error, "No compatible stream found");
 					return;
 				}
 
 				player.SetMetadata(
-					resolves[0].Title,
-					resolves[0].Subtitle,
-					await FetchThumbnailAsync(resolves[0].Thumbnails)
+					resolve.Title,
+					resolve.Subtitle,
+					await FetchThumbnailAsync(resolve.Thumbnails)
 				);
 
 				var flux = new List<Flux>();
