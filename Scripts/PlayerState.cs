@@ -60,6 +60,21 @@ namespace Nox.FFmpeg {
 		public bool QueueAttachmentsReq;
 		public double MaxFrameDuration;
 
+		/// <summary>
+		/// Number of seeks the read thread has serviced so far. Incremented on the read
+		/// thread and read on the main thread, so the controller can tell that its seek
+		/// has been honoured (see <c>Player.CheckSeekCompleted</c>).
+		/// </summary>
+		private int _seekServiced;
+		public int SeekServicedCount => Volatile.Read(ref _seekServiced);
+
+		/// <summary>
+		/// Position (AV_TIME_BASE ticks) of the last seek serviced by the read thread.
+		/// Lets the controller match *its own* request instead of just any serviced seek.
+		/// </summary>
+		private long _seekServicedPos = long.MinValue;
+		public long SeekServicedPos => Interlocked.Read(ref _seekServicedPos);
+
 		// ── threading ─────────────────────────────────────────────────────
 		public Thread ReadTid;
 		private Thread _audioReadTid;
@@ -201,14 +216,15 @@ namespace Nox.FFmpeg {
 		}
 
 		// stream_seek
+		// Unlike ffplay this never drops a request when one is already pending: the target
+		// is simply updated and the read thread re-checks it, so a scrub posting several
+		// positions always ends up on the latest one.
 		public void StreamSeek(long pos, long rel, bool byBytes) {
-			if (SeekReq)
-				return;
-			SeekPos   = pos;
-			SeekRel   = rel;
-			SeekFlags = (SeekFlags & ~ffmpeg.AVSEEK_FLAG_BYTE) | (byBytes ? ffmpeg.AVSEEK_FLAG_BYTE : 0);
-			SeekReq       = true;
-			AudioSeekReq  = true;
+			SeekPos      = pos;
+			SeekRel      = rel;
+			SeekFlags    = (SeekFlags & ~ffmpeg.AVSEEK_FLAG_BYTE) | (byBytes ? ffmpeg.AVSEEK_FLAG_BYTE : 0);
+			SeekReq      = true;
+			AudioSeekReq = true;
 			ContinueReadThread.Release();
 		}
 
@@ -435,9 +451,14 @@ namespace Nox.FFmpeg {
 
 					// seek
 					if (SeekReq) {
-						long seekMin = SeekRel > 0 ? SeekPos - SeekRel + 2 : long.MinValue;
-						long seekMax = SeekRel < 0 ? SeekPos - SeekRel - 2 : long.MaxValue;
-						int  r2      = ffmpeg.avformat_seek_file(ic, -1, seekMin, SeekPos, seekMax, SeekFlags);
+						// Snapshot the request: a newer position may be posted while this one is
+						// being serviced, in which case the loop serves it again below.
+						long pos     = SeekPos;
+						long rel     = SeekRel;
+						int  flags   = SeekFlags;
+						long seekMin = rel > 0 ? pos - rel + 2 : long.MinValue;
+						long seekMax = rel < 0 ? pos - rel - 2 : long.MaxValue;
+						int  r2      = ffmpeg.avformat_seek_file(ic, -1, seekMin, pos, seekMax, flags);
 						if (r2 < 0)
 							Log(LogType.Error, $"seek error: {Helper.ErrorToString(r2)}");
 						else {
@@ -447,10 +468,14 @@ namespace Nox.FFmpeg {
 								Subtitle.Packets.Flush();
 							if (Video.StreamIndex >= 0)
 								Video.Packets.Flush();
-							ExternalClock.Set((SeekFlags & ffmpeg.AVSEEK_FLAG_BYTE) != 0
-								? double.NaN : SeekPos / (double)ffmpeg.AV_TIME_BASE, 0);
+							ExternalClock.Set((flags & ffmpeg.AVSEEK_FLAG_BYTE) != 0
+								? double.NaN : pos / (double)ffmpeg.AV_TIME_BASE, 0);
 						}
-						SeekReq             = false;
+						// Only acknowledge when no newer request landed meanwhile.
+						if (SeekPos == pos && SeekRel == rel)
+							SeekReq = false;
+						Interlocked.Increment(ref _seekServiced);
+						Interlocked.Exchange(ref _seekServicedPos, pos);
 						QueueAttachmentsReq = true;
 						Eof                 = false;
 						if (Paused)
@@ -459,12 +484,11 @@ namespace Nox.FFmpeg {
 
 					if (QueueAttachmentsReq) {
 						var videoSt = Video.StreamPtr;
-						if (videoSt != null && (videoSt->disposition & ffmpeg.AV_DISPOSITION_ATTACHED_PIC) != 0) {
+						if (videoSt != null && (videoSt->disposition & ffmpeg.AV_DISPOSITION_ATTACHED_PIC) != 0)
 							if (ffmpeg.av_packet_ref(pkt, &videoSt->attached_pic) >= 0) {
 								Video.Packets.Put(pkt);
 								Video.Packets.PutNullPacket(pkt, Video.StreamIndex);
 							}
-						}
 						QueueAttachmentsReq = false;
 					}
 

@@ -137,9 +137,6 @@ namespace Nox.FFmpeg.Handlers {
 					af.Duration = ffmpeg.av_q2d(new AVRational { num = frame->nb_samples, den = frame->sample_rate });
 					ffmpeg.av_frame_move_ref(af.AVFrame, frame);
 					Frames.Push();
-
-					if (Packets.Serial != Decoder.PktSerial)
-						break;
 				} while (gotFrame >= 0 || gotFrame == ffmpeg.AVERROR(ffmpeg.EAGAIN) || gotFrame == ffmpeg.AVERROR_EOF);
 			} finally {
 				ffmpeg.av_frame_free(&frame);
@@ -353,11 +350,21 @@ namespace Nox.FFmpeg.Handlers {
 		public int PcmWritePos => _writePos;
 		public event Action<float[], int, int> OnSamples;
 
+		/// <summary>
+		/// Drop the PCM already buffered for the previous position: a seek invalidated it, so
+		/// it must never be replayed (or looped) after the reposition. Called from the main
+		/// thread, immediately when the seek is requested.
+		/// </summary>
+		public void DiscardBuffered()
+			=> _readPos = _writePos;
+
 
 		private readonly int _ringFrames;
 		private readonly float[] _ring;
 		private volatile int _writePos;
 		private volatile int _readPos;
+		/// <summary>Serial of the audio queue the ring currently holds PCM for.</summary>
+		private volatile int _ringSerial = -1;
 		private Thread _fillThread;
 		private volatile bool _running;
 
@@ -398,9 +405,24 @@ namespace Nox.FFmpeg.Handlers {
 			var chunk = new float[ChunkFrames * Channels];
 			while (_running) {
 				// Wait until the audio stream is actually open before decoding.
-			if (StreamIndex < 0) { Thread.Sleep(1); continue; }
+				if (StreamIndex < 0) {
+					 Thread.Sleep(1); 
+					 continue;
+				}
+
+				// A seek flushes the packet queue (new serial): the PCM already buffered
+				// belongs to the previous position — drop it instead of replaying it.
+				int serial = Packets.GetSerial();
+				if (serial != _ringSerial) {
+					_ringSerial = serial;
+					_readPos    = _writePos;
+				}
+
 				int free = _ringFrames - (_writePos - _readPos);
-				if (free < ChunkFrames) { Thread.Sleep(1); continue; }
+				if (free < ChunkFrames) { 
+					Thread.Sleep(1); 
+					continue;
+				}
 				AudioCallback(chunk, Channels, SampleRate);
 				WriteChunk(chunk);
 				_writePos += ChunkFrames;

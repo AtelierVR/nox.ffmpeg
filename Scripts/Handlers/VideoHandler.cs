@@ -98,8 +98,6 @@ namespace Nox.FFmpeg.Handlers {
 
 					ret = QueuePicture(frame, pts, duration, frame->pts, Decoder.PktSerial);
 					ffmpeg.av_frame_unref(frame);
-					if (Packets.Serial != Decoder.PktSerial)
-						break;
 					if (ret < 0)
 						break;
 				}
@@ -201,7 +199,11 @@ namespace Nox.FFmpeg.Handlers {
 			if (Frames.NbRemaining() > 1) {
 				Frame  nextvp = Frames.PeekNext();
 				double dur    = State.VpDuration(vp, nextvp);
-				if (State.Step == 0 && time > FrameTimer + dur) {
+				// Dropping late frames relies on a valid master clock: without it the
+				// A/V correction cannot work, and dropping everything would freeze the
+				// image. Fall back to displaying at the nominal frame rate.
+				bool canDrop = !double.IsNaN(State.MasterClock);
+				if (State.Step == 0 && canDrop && time > FrameTimer + dur) {
 					FrameDropsLate++;
 					Frames.Next();
 					goto retry;

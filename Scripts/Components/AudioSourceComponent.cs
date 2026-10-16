@@ -27,6 +27,13 @@ namespace Nox.FFmpeg.Components {
 
 		private AudioClip _clip;
 		private int _writePos;   // sample-frames written into the clip (monotonic)
+		/// <summary>
+		/// Value of <see cref="AudioHandler.PcmWritePos"/> when the clip/ring was (re)started.
+		/// <see cref="AudioHandler.PcmWritePos"/> is absolute, so it must be rebased whenever
+		/// <see cref="_writePos"/> is reset, otherwise the latency fed back to the A/V clock
+		/// becomes meaningless.
+		/// </summary>
+		private int _pcmBase;
 		private bool _started;
 		private float[] _scratch;
 		private float[] _fill;       // reused: SetData needs an array of exactly the written length
@@ -56,6 +63,7 @@ namespace Nox.FFmpeg.Components {
 			if(Source.InternalState != null)
 				HandleStateChanged(Source.InternalState);
 			Source.OnStateChanged.AddListener(HandleStateChanged);
+			Source.OnSeek.AddListener(HandleSeek);
 		}
 
 		private void HandleStateChanged(PlayerState state) {
@@ -67,8 +75,23 @@ namespace Nox.FFmpeg.Components {
 		private void OnDisable() {
 			Source.OnClip.RemoveListener(HandleClip);
 			Source.OnStateChanged.RemoveListener(HandleStateChanged);
+			Source.OnSeek.RemoveListener(HandleSeek);
 			foreach (var a in Targets)
 				if (a) a.Pause();
+		}
+
+		/// <summary>
+		/// The player is repositioning: the PCM buffered in the clip (and in the handler's
+		/// ring) belongs to the previous position. Restart the ring so playback resumes
+		/// cleanly at the new time instead of replaying stale samples (or looping them).
+		/// </summary>
+		private void HandleSeek(IVideoPlayer player, double time) {
+			Audio?.DiscardBuffered();   // the handler ring holds PCM from the previous position
+			_writePos = 0;
+			_pcmBase  = Audio?.PcmWritePos ?? 0;
+			_started  = false;
+			foreach (var a in Targets)
+				if (a) a.Stop();
 		}
 
 		private void OnDestroy() {
@@ -91,6 +114,7 @@ namespace Nox.FFmpeg.Components {
 			}
 			_clip = clip;
 			_writePos = 0;
+			_pcmBase  = Audio?.PcmWritePos ?? 0;
 			_started = false;
 			_scratch = null;
 			_fill = null;
@@ -164,8 +188,8 @@ namespace Nox.FFmpeg.Components {
 			}
 
 			// Feed the total decode→speaker buffering back to the A/V clock.
-			// frames still in the handler ring
-			int decodedAhead = Audio.PcmWritePos - _writePos;
+			// frames still in the handler ring (rebased: PcmWritePos is absolute)
+			int decodedAhead = Mathf.Max(0, Audio.PcmWritePos - _pcmBase - _writePos);
 			float totalLatency = (float)(decodedAhead + ahead) / sampleRate;
 			Audio.Latency = Mathf.Clamp(totalLatency, 0.01f, 1.5f);
 		}

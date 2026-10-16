@@ -28,13 +28,52 @@ namespace Nox.FFmpeg {
 		// ── Timeline & Clock ──────────────────────────────────────────────
 		public double MasterClock => InternalState?.MasterClock ?? double.NaN;
 
+		/// <summary>
+		/// Position (seconds) the user asked for on the last seek, or NaN when there is none.
+		/// Two purposes: reported immediately as <see cref="Time"/> while the clocks are
+		/// invalid, and used as a floor until the clock catches up (the audio clock lags the
+		/// decoded position by the output latency) so the timeline never steps back.
+		/// </summary>
+		private double _seekTarget = double.NaN;
+		/// <summary>Unscaled time of that request (bounds how long the floor applies).</summary>
+		private float _seekTargetAt;
+		/// <summary>How long the requested position may keep overriding the clock.</summary>
+		private const float SeekFloorGrace = 1.5f;
+		/// <summary>A clock within this many seconds of the target is considered caught up.</summary>
+		private const double SeekFloorTolerance = 0.15;
+		/// <summary>Position (AV_TIME_BASE ticks) of that same request.</summary>
+		private long _seekRequestTicks = long.MinValue;
+		/// <summary>Last position reported by a valid master clock.</summary>
+		private double _lastKnownTime = double.NaN;
+		/// <summary>True while the seek has not been serviced by the read thread yet.</summary>
+		private bool _seeking;
+		/// <summary>Unscaled time the current seek was requested at (safety timeout).</summary>
+		private float _seekStartedAt;
+		/// <summary>A seek that never completes (dead stream…) must not freeze the timeline.</summary>
+		private const float SeekTimeout = 5f;
+
+		/// <summary>
+		/// True while the seek has been requested and the demuxer has not been repositioned
+		/// yet.
+		/// </summary>
+		public bool IsSeeking
+			=> _seeking;
+
 		public double Time {
 			get {
 				var t = MasterClock;
-				if (double.IsNaN(t)) return t;
-				var d = Duration;
-				if (double.IsNaN(d) || d <= 0) return t;
-				return Math.Clamp(t, 0, d);
+				if (!double.IsNaN(t)) {
+					var    d = Duration;
+					double v = double.IsNaN(d) || d <= 0 ? t : Math.Clamp(t, 0, d);
+					// Never step back below the position the user asked for: right after a seek
+					// the audio clock is still behind by the output latency.
+					return !double.IsNaN(_seekTarget) && v + SeekFloorTolerance < _seekTarget
+						? _seekTarget
+						: v;
+				}
+				// Clocks invalid (seek in flight, initial buffering): report the requested
+				// position, or the last known one, instead of 00:00.
+				return !double.IsNaN(_seekTarget) ? _seekTarget : _lastKnownTime;
 			}
 			set => Seek(value);
 		}
@@ -71,6 +110,7 @@ namespace Nox.FFmpeg {
 		public void Play(string query) {
 			if (string.IsNullOrWhiteSpace(query))
 				return;
+			_url = query; // remember the last launched url
 			if (VideoPlayerResolver.IsMedia(this, query)) {
 				Open(new Flux(StreamType.Av, query));
 				return;
@@ -138,6 +178,10 @@ namespace Nox.FFmpeg {
 
 		[ContextMenu("Stop")]
 		public void Close() {
+			_seeking          = false;
+			_seekTarget       = double.NaN; // a new stream must not inherit the previous position
+			_seekRequestTicks = long.MinValue;
+			_lastKnownTime    = double.NaN;
 			if (InternalState != null)
 				foreach (var handler in InternalState.Handlers)
 					handler.Stop();
@@ -172,18 +216,97 @@ namespace Nox.FFmpeg {
 		}
 
 		public void Seek(double seconds) {
-			InternalState?.StreamSeek((long)(seconds * ffmpeg.AV_TIME_BASE), 0, false);
+			var state = InternalState;
+			if (state == null)
+				return;
+
+			var duration = Duration;
+			if (!double.IsNaN(duration) && duration > 0)
+				seconds = Math.Clamp(seconds, 0, duration);
+			if (seconds < 0)
+				seconds = 0;
+
+			bool alreadySeeking = _seeking;
+			_seekRequestTicks = (long)(seconds * ffmpeg.AV_TIME_BASE);
+			_seekTarget       = seconds;
+			_seekTargetAt     = UnityEngine.Time.unscaledTime;
+			_seeking          = true;
+			_seekStartedAt    = _seekTargetAt;
+			state.StreamSeek(_seekRequestTicks, 0, false);
 			OnSeek.Invoke(this, seconds);
+			if (!alreadySeeking)
+				OnState.Invoke(this, State.Seeking);
 		}
 
 		public void SeekRelative(double delta) {
-			if (InternalState == null)
+			var state = InternalState;
+			if (state == null)
 				return;
-			double pos = InternalState.MasterClock;
+			double pos = Time;
 			if (double.IsNaN(pos))
-				pos = (double)InternalState.SeekPos / ffmpeg.AV_TIME_BASE;
+				pos = (double)state.SeekPos / ffmpeg.AV_TIME_BASE;
 			pos += delta;
-			InternalState.StreamSeek((long)(pos * ffmpeg.AV_TIME_BASE), (long)(delta * ffmpeg.AV_TIME_BASE), false);
+			if (pos < 0)
+				pos = 0;
+
+			bool alreadySeeking = _seeking;
+			_seekRequestTicks = (long)(pos * ffmpeg.AV_TIME_BASE);
+			_seekTarget       = pos;
+			_seekTargetAt     = UnityEngine.Time.unscaledTime;
+			_seeking          = true;
+			_seekStartedAt    = _seekTargetAt;
+			state.StreamSeek(_seekRequestTicks, (long)(delta * ffmpeg.AV_TIME_BASE), false);
+			OnSeek.Invoke(this, pos);
+			if (!alreadySeeking)
+				OnState.Invoke(this, State.Seeking);
+		}
+
+		/// <summary>
+		/// Ends <see cref="State.Seeking"/> as soon as the demuxer reposition has been
+		/// serviced (<see cref="PlayerState.SeekServicedPos"/> matches the requested
+		/// position) — a demuxer seek is the only part that is really "seeking"; waiting for
+		/// the clocks would add the whole output latency. The player then reports Buffering
+		/// while the queues refill. Falls back to a timeout so a stalled stream cannot leave
+		/// the player stuck in Seeking.
+		/// </summary>
+		private void CheckSeekCompleted() {
+			if (!_seeking)
+				return;
+
+			var state = InternalState;
+			if (state == null) {
+				EndSeek();
+				return;
+			}
+
+			bool serviced = state.SeekServicedPos == _seekRequestTicks;
+			bool timedOut = UnityEngine.Time.unscaledTime - _seekStartedAt >= SeekTimeout;
+			if (serviced || timedOut)
+				EndSeek();
+		}
+
+		private void EndSeek() {
+			_seeking = false;
+			OnState.Invoke(this, State); // re-evaluate: Seeking → Buffering / Playing
+		}
+
+		/// <summary>
+		/// Maintains the timeline fallbacks: remembers the last valid clock and releases the
+		/// seek floor once the clock caught up (or after a grace period, in case the stream
+		/// landed far from the target, e.g. on a keyframe).
+		/// </summary>
+		private void UpdateTimelineFallback() {
+			var t = MasterClock;
+			if (!double.IsNaN(t))
+				_lastKnownTime = t;
+
+			if (_seeking || double.IsNaN(_seekTarget))
+				return; // while seeking the floor must stay whatever the clock says
+
+			bool caughtUp  = !double.IsNaN(t) && t + SeekFloorTolerance >= _seekTarget;
+			bool graceOver = UnityEngine.Time.unscaledTime - _seekTargetAt > SeekFloorGrace;
+			if (caughtUp || graceOver)
+				_seekTarget = double.NaN;
 		}
 
 		private void OnEndReached() {
