@@ -71,9 +71,16 @@ namespace Nox.FFmpeg.Components {
 
 		// ── Utils ───────────────────────────────────────────────────────── 
 
-		/// Current video texture from the Player (null if none).
-		public VideoHandler Video 
-			=> Source.InternalState?.GetHandler<VideoHandler>();
+		/// Handler of the current state, cached: it is only resolved when the player state
+		/// changes (resolving it per frame would allocate through the handler lookup).
+		private VideoHandler _video;
+
+		/// Texture currently pushed to the targets (re-applied when the buffer changes).
+		private Texture2D _applied;
+
+		/// Current video handler from the Player (null if none).
+		public VideoHandler Video
+			=> _video;
 
 		// ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -87,15 +94,37 @@ namespace Nox.FFmpeg.Components {
 			Source.OnStateChanged.AddListener(HandleStateChanged);
 		}
 
+		/// <summary>
+		/// <c>OnTexture</c> is only raised when the frame buffer is <b>(re)allocated</b> — and
+		/// <see cref="Player.Open"/> starts the read thread before announcing the new state, so
+		/// that first notification happens while this component is still listening to the
+		/// previous handler. The current frame is therefore also re-checked every frame, which
+		/// costs a reference comparison and keeps a stale texture from ever staying on the mesh.
+		/// </summary>
+		private void Update() {
+			if (_video == null)
+				return;
+
+			var frame = _video.Frame;
+			if (frame == null || frame == _applied)
+				return;
+
+			HandleFrame(frame);
+		}
+
 		private void HandleStateChanged(PlayerState state) {
-			if (Video == null) return;
-			Video.OnTexture.AddListener(HandleFrame);
-            HandleFrame(Video.Frame);
+			_video?.OnTexture.RemoveListener(HandleFrame);
+			_video  = state?.GetHandler<VideoHandler>();
+			_applied = null;
+			if (_video == null) return;
+			_video.OnTexture.AddListener(HandleFrame);
+			HandleFrame(_video.Frame);
 		}
 
 		private void OnDisable() {
-			Video?.OnTexture.RemoveListener(HandleFrame);
+			_video?.OnTexture.RemoveListener(HandleFrame);
 			Source.OnStateChanged.RemoveListener(HandleStateChanged);
+			_applied = null;
 		}
 
 		private void OnDestroy() {
@@ -110,6 +139,7 @@ namespace Nox.FFmpeg.Components {
 		private void HandleFrame(Texture2D frame) {
 			if (frame == null)
 				return;
+			_applied = frame;
 			foreach (var t in Targets)
 				Apply(t, frame);
 		}
