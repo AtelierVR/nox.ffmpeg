@@ -10,7 +10,6 @@ namespace Nox.FFmpeg.Utils {
 		private readonly bool _keepLast;
 		private readonly PacketQueue _pktq;
 		private readonly object _lock = new();
-		private readonly SemaphoreSlim _cond = new(0);
 
 		public FrameQueue(PacketQueue pktq, int maxSize, bool keepLast) {
 			_pktq     = pktq;
@@ -21,44 +20,55 @@ namespace Nox.FFmpeg.Utils {
 				_queue[i] = new Frame();
 		}
 
-		public int NbRemaining()
-			=> _size - _rindexShown;
+		public int NbRemaining() {
+			lock (_lock)
+				return _size - _rindexShown;
+		}
 
-		// frame_queue_peek_writable — blocks until space available
+		// frame_queue_peek_writable — blocks until space available.
+		// The wait uses Monitor on _lock with the predicate re-checked under the same lock:
+		// a single shared semaphore would let one waiter consume the permit released for
+		// the other one (producer vs consumer) and deadlock the queue.
 		public Frame PeekWritable() {
-			while (true) {
-				lock (_lock) {
+			lock (_lock) {
+				while (true) {
 					if (_pktq.AbortRequest)
 						return null;
 					if (_size < _queue.Length)
 						return _queue[_windex];
+					Monitor.Wait(_lock);
 				}
-				_cond.Wait();
 			}
 		}
 
 		// frame_queue_peek_readable — blocks until a frame is available
 		public Frame PeekReadable() {
-			while (true) {
-				lock (_lock) {
+			lock (_lock) {
+				while (true) {
 					if (_pktq.AbortRequest)
 						return null;
 					if (_size - _rindexShown > 0)
 						return _queue[(_rindex + _rindexShown) % _queue.Length];
+					Monitor.Wait(_lock);
 				}
-				_cond.Wait();
 			}
 		}
 
 		// frame_queue_peek
-		public Frame Peek()
-			=> _queue[(_rindex + _rindexShown) % _queue.Length];
+		public Frame Peek() {
+			lock (_lock)
+				return _queue[(_rindex + _rindexShown) % _queue.Length];
+		}
 		// frame_queue_peek_next
-		public Frame PeekNext()
-			=> _queue[(_rindex + _rindexShown + 1) % _queue.Length];
+		public Frame PeekNext() {
+			lock (_lock)
+				return _queue[(_rindex + _rindexShown + 1) % _queue.Length];
+		}
 		// frame_queue_peek_last
-		public Frame PeekLast()
-			=> _queue[_rindex];
+		public Frame PeekLast() {
+			lock (_lock)
+				return _queue[_rindex];
+		}
 
 		// frame_queue_push
 		public void Push() {
@@ -66,36 +76,38 @@ namespace Nox.FFmpeg.Utils {
 				if (++_windex == _queue.Length)
 					_windex = 0;
 				_size++;
-				_cond.Release();
+				Monitor.PulseAll(_lock);
 			}
 		}
 
 		// frame_queue_next
 		public void Next() {
-			if (_keepLast && _rindexShown == 0) {
-				_rindexShown = 1;
-				return;
-			}
-			_queue[_rindex].Unref();
 			lock (_lock) {
+				if (_keepLast && _rindexShown == 0) {
+					_rindexShown = 1;
+					return;
+				}
+				_queue[_rindex].Unref();
 				if (++_rindex == _queue.Length)
 					_rindex = 0;
 				_size--;
-				_cond.Release();
+				Monitor.PulseAll(_lock);
 			}
 		}
 
 		// frame_queue_last_pos
 		public long LastPos() {
-			var fp = _queue[_rindex];
-			if (_rindexShown != 0 && fp.Serial == _pktq.Serial)
-				return fp.Pos;
-			return -1;
+			lock (_lock) {
+				var fp = _queue[_rindex];
+				if (_rindexShown != 0 && fp.Serial == _pktq.Serial)
+					return fp.Pos;
+				return -1;
+			}
 		}
 
 		public void Signal() {
 			lock (_lock)
-				_cond.Release();
+				Monitor.PulseAll(_lock);
 		}
 
 		// frame_queue_flush — drop every queued frame (used when the stream of a
@@ -108,14 +120,13 @@ namespace Nox.FFmpeg.Utils {
 				_windex      = 0;
 				_rindexShown = 0;
 				_size        = 0;
+				Monitor.PulseAll(_lock);
 			}
-			Signal();
 		}
 
 		public void Dispose() {
 			foreach (var f in _queue)
 				f.Free();
-			_cond.Dispose();
 		}
 	}
 }
